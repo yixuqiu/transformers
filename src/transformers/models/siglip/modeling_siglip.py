@@ -12,8 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" PyTorch Siglip model."""
-
+"""PyTorch Siglip model."""
 
 import math
 import warnings
@@ -96,7 +95,7 @@ def trunc_normal_tf_(
 
     NOTE: this 'tf' variant behaves closer to Tensorflow / JAX impl where the
     bounds [a, b] are applied when sampling the normal distribution with mean=0, std=1.0
-    and the result is subsquently scaled and shifted by the mean and std args.
+    and the result is subsequently scaled and shifted by the mean and std args.
 
     Args:
         tensor: an n-dimensional `torch.Tensor`
@@ -497,6 +496,13 @@ class SiglipPreTrainedModel(PreTrainedModel):
     config_class = SiglipConfig
     base_model_prefix = "siglip"
     supports_gradient_checkpointing = True
+    _no_split_modules = [
+        "SiglipTextEmbeddings",
+        "SiglipEncoderLayer",
+        "SiglipVisionEmbeddings",
+        "SiglipEncoderLayer",
+        "SiglipMultiheadAttentionPoolingHead",
+    ]
 
     def _init_weights(self, module):
         """Initialize the weights"""
@@ -817,8 +823,6 @@ class SiglipTextTransformer(nn.Module):
 class SiglipTextModel(SiglipPreTrainedModel):
     config_class = SiglipTextConfig
 
-    _no_split_modules = ["SiglipTextEmbeddings", "SiglipEncoderLayer"]
-
     def __init__(self, config: SiglipTextConfig):
         super().__init__(config)
         self.text_model = SiglipTextTransformer(config)
@@ -881,7 +885,9 @@ class SiglipVisionTransformer(nn.Module):
         self.embeddings = SiglipVisionEmbeddings(config)
         self.encoder = SiglipEncoder(config)
         self.post_layernorm = nn.LayerNorm(embed_dim, eps=config.layer_norm_eps)
-        self.head = SiglipMultiheadAttentionPoolingHead(config)
+        self.use_head = True if not hasattr(config, "vision_use_head") else config.vision_use_head
+        if self.use_head:
+            self.head = SiglipMultiheadAttentionPoolingHead(config)
 
     @add_start_docstrings_to_model_forward(SIGLIP_VISION_INPUTS_DOCSTRING)
     @replace_return_docstrings(output_type=BaseModelOutputWithPooling, config_class=SiglipVisionConfig)
@@ -915,14 +921,13 @@ class SiglipVisionTransformer(nn.Module):
         last_hidden_state = encoder_outputs[0]
         last_hidden_state = self.post_layernorm(last_hidden_state)
 
-        pooled_output = self.head(last_hidden_state)
-
+        pooler_output = self.head(last_hidden_state) if self.use_head else None
         if not return_dict:
-            return (last_hidden_state, pooled_output) + encoder_outputs[1:]
+            return (last_hidden_state, pooler_output) + encoder_outputs[1:]
 
         return BaseModelOutputWithPooling(
             last_hidden_state=last_hidden_state,
-            pooler_output=pooled_output,
+            pooler_output=pooler_output,
             hidden_states=encoder_outputs.hidden_states,
             attentions=encoder_outputs.attentions,
         )
@@ -1221,7 +1226,10 @@ class SiglipModel(SiglipPreTrainedModel):
         text_embeds = text_embeds / text_embeds.norm(p=2, dim=-1, keepdim=True)
 
         # cosine similarity as logits
-        logits_per_text = torch.matmul(text_embeds, image_embeds.t()) * self.logit_scale.exp() + self.logit_bias
+        logits_per_text = (
+            torch.matmul(text_embeds, image_embeds.t().to(text_embeds.device)) * self.logit_scale.exp()
+            + self.logit_bias
+        )
         logits_per_image = logits_per_text.t()
 
         loss = None

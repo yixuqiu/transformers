@@ -111,7 +111,7 @@ class AssistedCandidateGenerator(CandidateGenerator):
         # Prepare the kwargs for the assistant model
         assistant_kwargs = {}
         for key, value in model_kwargs.items():  # deepcopy crashes if we attempt to copy encoder outputs with grads
-            if key not in ("encoder_outputs", "assistant_encoder_outputs"):
+            if key not in ("encoder_outputs", "assistant_encoder_outputs", "past_key_values"):
                 assistant_kwargs[key] = (
                     value.detach().to(device) if isinstance(value, torch.Tensor) else copy.deepcopy(value)
                 )
@@ -149,6 +149,12 @@ class AssistedCandidateGenerator(CandidateGenerator):
         self.generation_config = copy.deepcopy(generation_config)
         self.generation_config.return_dict_in_generate = True
         self.generation_config.output_scores = True
+
+        # Disable sampling -- this implementation of assisted generation/speculative decoding uses the assistant
+        # greedily to maximize matches. Disables sampling-related flags to prevent warnings
+        self.generation_config.do_sample = False
+        for attr in ("temperature", "top_p", "min_p", "typical_p", "top_k", "epsilon_cutoff", "eta_cutoff"):
+            setattr(self.generation_config, attr, None)
 
         # avoid unnecessary warnings that min_length is larger than max_new_tokens
         # remove the `MinLengthLogitsProcessor` if exists (NOTE: no need to check for `MinNewTokensLogitsProcessor`)
@@ -344,15 +350,15 @@ class PromptLookupCandidateGenerator(CandidateGenerator):
         return
 
 
-def _crop_past_key_values(model, past_key_values, maximum_length):
+def _crop_past_key_values(model, past_key_values, max_length):
     """Crops the past key values up to a certain maximum length."""
     new_past = []
     if model.config.is_encoder_decoder:
         for idx in range(len(past_key_values)):
             new_past.append(
                 (
-                    past_key_values[idx][0][:, :, :maximum_length, :],
-                    past_key_values[idx][1][:, :, :maximum_length, :],
+                    past_key_values[idx][0][:, :, :max_length, :],
+                    past_key_values[idx][1][:, :, :max_length, :],
                     past_key_values[idx][2],
                     past_key_values[idx][3],
                 )
@@ -365,8 +371,8 @@ def _crop_past_key_values(model, past_key_values, maximum_length):
         for idx in range(len(past_key_values)):
             new_past.append(
                 (
-                    past_key_values[idx][0][:, :, :maximum_length],
-                    past_key_values[idx][1][:, :maximum_length, :],
+                    past_key_values[idx][0][:, :, :max_length],
+                    past_key_values[idx][1][:, :max_length, :],
                 )
             )
         past_key_values = tuple(new_past)
@@ -376,22 +382,19 @@ def _crop_past_key_values(model, past_key_values, maximum_length):
     ):
         if model.config.multi_query:
             for idx in range(len(past_key_values)):
-                past_key_values[idx] = past_key_values[idx][:, :maximum_length, :]
+                past_key_values[idx] = past_key_values[idx][:, :max_length, :]
         else:
             for idx in range(len(past_key_values)):
-                past_key_values[idx] = past_key_values[idx][:, :, :maximum_length, :]
+                past_key_values[idx] = past_key_values[idx][:, :, :max_length, :]
     elif isinstance(past_key_values, DynamicCache):
-        for idx in range(len(past_key_values.key_cache)):
-            if past_key_values.value_cache[idx].shape[-1] != 0:
-                past_key_values.key_cache[idx] = past_key_values.key_cache[idx][:, :, :maximum_length, :]
-                past_key_values.value_cache[idx] = past_key_values.value_cache[idx][:, :, :maximum_length, :]
+        past_key_values.crop(max_length)
 
     elif past_key_values is not None:
         for idx in range(len(past_key_values)):
             new_past.append(
                 (
-                    past_key_values[idx][0][:, :, :maximum_length, :],
-                    past_key_values[idx][1][:, :, :maximum_length, :],
+                    past_key_values[idx][0][:, :, :max_length, :],
+                    past_key_values[idx][1][:, :, :max_length, :],
                 )
             )
         past_key_values = tuple(new_past)

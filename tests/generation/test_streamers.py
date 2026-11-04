@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2023 The HuggingFace Team Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,10 +14,20 @@
 
 import unittest
 from queue import Empty
-from threading import Thread
+from threading import Event, Thread
+from unittest.mock import patch
 
-from transformers import AutoTokenizer, TextIteratorStreamer, TextStreamer, is_torch_available
+import pytest
+
+from transformers import (
+    AsyncTextIteratorStreamer,
+    AutoTokenizer,
+    TextIteratorStreamer,
+    TextStreamer,
+    is_torch_available,
+)
 from transformers.testing_utils import CaptureStdout, require_torch, torch_device
+from transformers.utils.logging import _get_library_root_logger
 
 from ..test_modeling_common import ids_tensor
 
@@ -26,7 +35,17 @@ from ..test_modeling_common import ids_tensor
 if is_torch_available():
     import torch
 
-    from transformers import AutoModelForCausalLM
+    from transformers import AutoModelForCausalLM, LogitsProcessor, LogitsProcessorList
+
+    class BlockingLogitsProcessor(LogitsProcessor):
+        """Holds generation on the first decoding step until `release` is set."""
+
+        def __init__(self, release):
+            self.release = release
+
+        def __call__(self, input_ids, scores):
+            self.release.wait()
+            return scores
 
 
 @require_torch
@@ -94,9 +113,12 @@ class StreamerTester(unittest.TestCase):
         model.config.eos_token_id = -1
 
         input_ids = torch.ones((1, 5), device=torch_device).long() * model.config.bos_token_id
-        with CaptureStdout() as cs:
-            streamer = TextStreamer(tokenizer, skip_special_tokens=True)
-            model.generate(input_ids, max_new_tokens=1, do_sample=False, streamer=streamer)
+
+        root = _get_library_root_logger()
+        with patch.object(root, "propagate", False):
+            with CaptureStdout() as cs:
+                streamer = TextStreamer(tokenizer, skip_special_tokens=True)
+                model.generate(input_ids, max_new_tokens=1, do_sample=False, streamer=streamer)
 
         # The prompt contains a special token, so the streamer should not print it. As such, the output text, when
         # re-tokenized, must only contain one token
@@ -110,13 +132,76 @@ class StreamerTester(unittest.TestCase):
         model.config.eos_token_id = -1
 
         input_ids = ids_tensor((1, 5), vocab_size=model.config.vocab_size).to(torch_device)
-        streamer = TextIteratorStreamer(tokenizer, timeout=0.001)
-        generation_kwargs = {"input_ids": input_ids, "max_new_tokens": 10, "do_sample": False, "streamer": streamer}
+        # `skip_prompt` keeps the prompt out of the queue, and generation is held until the timeout has fired, so
+        # the queue is guaranteed to be empty: otherwise the test races generation against the timeout
+        streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, timeout=0.001)
+        release = Event()
+        generation_kwargs = {
+            "input_ids": input_ids,
+            "max_new_tokens": 10,
+            "do_sample": False,
+            "streamer": streamer,
+            "logits_processor": LogitsProcessorList([BlockingLogitsProcessor(release)]),
+        }
         thread = Thread(target=model.generate, kwargs=generation_kwargs)
         thread.start()
 
         # The streamer will timeout after 0.001 seconds, so an exception will be raised
-        with self.assertRaises(Empty):
-            streamer_text = ""
-            for new_text in streamer:
-                streamer_text += new_text
+        try:
+            with self.assertRaises(Empty):
+                for _ in streamer:
+                    pass
+        finally:
+            release.set()
+            thread.join()
+
+
+@require_torch
+@pytest.mark.asyncio(loop_scope="class")
+class AsyncStreamerTester(unittest.IsolatedAsyncioTestCase):
+    async def test_async_iterator_streamer_matches_non_streaming(self):
+        tokenizer = AutoTokenizer.from_pretrained("hf-internal-testing/tiny-random-gpt2")
+        model = AutoModelForCausalLM.from_pretrained("hf-internal-testing/tiny-random-gpt2").to(torch_device)
+        model.config.eos_token_id = -1
+
+        input_ids = ids_tensor((1, 5), vocab_size=model.config.vocab_size).to(torch_device)
+        greedy_ids = model.generate(input_ids, max_new_tokens=10, do_sample=False)
+        greedy_text = tokenizer.decode(greedy_ids[0])
+
+        streamer = AsyncTextIteratorStreamer(tokenizer)
+        generation_kwargs = {"input_ids": input_ids, "max_new_tokens": 10, "do_sample": False, "streamer": streamer}
+        thread = Thread(target=model.generate, kwargs=generation_kwargs)
+        thread.start()
+        streamer_text = ""
+        async for new_text in streamer:
+            streamer_text += new_text
+
+        self.assertEqual(streamer_text, greedy_text)
+
+    async def test_async_iterator_streamer_timeout(self):
+        tokenizer = AutoTokenizer.from_pretrained("hf-internal-testing/tiny-random-gpt2")
+        model = AutoModelForCausalLM.from_pretrained("hf-internal-testing/tiny-random-gpt2").to(torch_device)
+        model.config.eos_token_id = -1
+
+        input_ids = ids_tensor((1, 5), vocab_size=model.config.vocab_size).to(torch_device)
+        # Same as the sync test: no prompt in the queue and generation held, so the timeout must fire
+        streamer = AsyncTextIteratorStreamer(tokenizer, skip_prompt=True, timeout=0.001)
+        release = Event()
+        generation_kwargs = {
+            "input_ids": input_ids,
+            "max_new_tokens": 10,
+            "do_sample": False,
+            "streamer": streamer,
+            "logits_processor": LogitsProcessorList([BlockingLogitsProcessor(release)]),
+        }
+        thread = Thread(target=model.generate, kwargs=generation_kwargs)
+        thread.start()
+
+        # The streamer will timeout after 0.001 seconds, so TimeoutError will be raised
+        try:
+            with self.assertRaises(TimeoutError):
+                async for _ in streamer:
+                    pass
+        finally:
+            release.set()
+            thread.join()

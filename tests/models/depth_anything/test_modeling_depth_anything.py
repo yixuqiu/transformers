@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2024 The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,8 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" Testing suite for the PyTorch Depth Anything model. """
-
+"""Testing suite for the PyTorch Depth Anything model."""
 
 import unittest
 
@@ -35,7 +33,7 @@ if is_torch_available():
 if is_vision_available():
     from PIL import Image
 
-    from transformers import DPTImageProcessor
+    from transformers import DPTImageProcessorPil
 
 
 class DepthAnythingModelTester:
@@ -143,24 +141,20 @@ class DepthAnythingModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.Tes
     all_model_classes = (DepthAnythingForDepthEstimation,) if is_torch_available() else ()
     pipeline_model_mapping = {"depth-estimation": DepthAnythingForDepthEstimation} if is_torch_available() else {}
 
-    test_pruning = False
     test_resize_embeddings = False
-    test_head_masking = False
 
     def setUp(self):
         self.model_tester = DepthAnythingModelTester(self)
         self.config_tester = ConfigTester(
-            self, config_class=DepthAnythingConfig, has_text_modality=False, hidden_size=37
+            self,
+            config_class=DepthAnythingConfig,
+            has_text_modality=False,
+            hidden_size=32,
+            common_properties=["patch_size"],
         )
 
     def test_config(self):
-        self.config_tester.create_and_test_config_to_json_string()
-        self.config_tester.create_and_test_config_to_json_file()
-        self.config_tester.create_and_test_config_from_and_save_pretrained()
-        self.config_tester.create_and_test_config_from_and_save_pretrained_subfolder()
-        self.config_tester.create_and_test_config_with_num_labels()
-        self.config_tester.check_config_can_be_init_without_params()
-        self.config_tester.check_config_arguments_init()
+        self.config_tester.run_common_tests()
 
     @unittest.skip(reason="Depth Anything with AutoBackbone does not have a base model and hence no input_embeddings")
     def test_inputs_embeds(self):
@@ -170,36 +164,24 @@ class DepthAnythingModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.Tes
         config_and_inputs = self.model_tester.prepare_config_and_inputs()
         self.model_tester.create_and_check_for_depth_estimation(*config_and_inputs)
 
-    @unittest.skip(reason="Depth Anything does not support training yet")
+    @unittest.skip(reason="Depth Anything with AutoBackbone does not have a base model and hence no input_embeddings")
+    def test_model_get_set_embeddings(self):
+        pass
+
+    @unittest.skip(reason="Training is not yet supported")
     def test_training(self):
         pass
 
-    @unittest.skip(reason="Depth Anything does not support training yet")
+    @unittest.skip(reason="Training is not yet supported")
     def test_training_gradient_checkpointing(self):
         pass
 
-    @unittest.skip(reason="Depth Anything with AutoBackbone does not have a base model and hence no input_embeddings")
-    def test_model_common_attributes(self):
-        pass
-
-    @unittest.skip(reason="Depth Anything with AutoBackbone does not have a base model")
-    def test_save_load_fast_init_from_base(self):
-        pass
-
-    @unittest.skip(reason="Depth Anything with AutoBackbone does not have a base model")
-    def test_save_load_fast_init_to_base(self):
-        pass
-
-    @unittest.skip(
-        reason="This architecture seems to not compute gradients properly when using GC, check: https://github.com/huggingface/transformers/pull/27124"
-    )
-    def test_training_gradient_checkpointing_use_reentrant(self):
-        pass
-
-    @unittest.skip(
-        reason="This architecture seems to not compute gradients properly when using GC, check: https://github.com/huggingface/transformers/pull/27124"
-    )
+    @unittest.skip(reason="Training is not yet supported")
     def test_training_gradient_checkpointing_use_reentrant_false(self):
+        pass
+
+    @unittest.skip(reason="Training is not yet supported")
+    def test_training_gradient_checkpointing_use_reentrant_true(self):
         pass
 
     @slow
@@ -207,6 +189,40 @@ class DepthAnythingModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.Tes
         model_name = "LiheYoung/depth-anything-small-hf"
         model = DepthAnythingForDepthEstimation.from_pretrained(model_name)
         self.assertIsNotNone(model)
+
+    def test_backbone_selection(self):
+        def _validate_backbone_init():
+            for model_class in self.all_model_classes:
+                model = model_class(config)
+                model.to(torch_device)
+                model.eval()
+
+                # Confirm out_indices propagated to backbone
+                self.assertEqual(len(model.backbone.out_indices), 2)
+
+        config, inputs_dict = self.model_tester.prepare_config_and_inputs_for_common()
+
+        # These kwargs are all removed and are supported only for BC
+        # In new models we have only `backbone_config`. Let's test that there is no regression
+        # Load a timm backbone
+        config_dict = config.to_dict()
+        config_dict["backbone"] = "resnet18"
+        config_dict["use_pretrained_backbone"] = True
+        config_dict["use_timm_backbone"] = True
+        config_dict["backbone_config"] = None
+        config_dict["backbone_kwargs"] = {"out_indices": (-2, -1)}
+        config = config.__class__(**config_dict)
+        _validate_backbone_init()
+
+        # Load a HF backbone
+        config_dict = config.to_dict()
+        config_dict["backbone"] = "facebook/dinov2-small"
+        config_dict["use_pretrained_backbone"] = True
+        config_dict["use_timm_backbone"] = False
+        config_dict["backbone_config"] = None
+        config_dict["backbone_kwargs"] = {"out_indices": [-2, -1]}
+        config = config.__class__(**config_dict)
+        _validate_backbone_init()
 
 
 # We will verify our results on an image of cute cats
@@ -220,7 +236,8 @@ def prepare_img():
 @slow
 class DepthAnythingModelIntegrationTest(unittest.TestCase):
     def test_inference(self):
-        image_processor = DPTImageProcessor.from_pretrained("LiheYoung/depth-anything-small-hf")
+        # -- `relative` depth model --
+        image_processor = DPTImageProcessorPil.from_pretrained("LiheYoung/depth-anything-small-hf")
         model = DepthAnythingForDepthEstimation.from_pretrained("LiheYoung/depth-anything-small-hf").to(torch_device)
 
         image = prepare_img()
@@ -236,7 +253,32 @@ class DepthAnythingModelIntegrationTest(unittest.TestCase):
         self.assertEqual(predicted_depth.shape, expected_shape)
 
         expected_slice = torch.tensor(
-            [[8.8204, 8.6468, 8.6195], [8.3313, 8.6027, 8.7526], [8.6526, 8.6866, 8.7453]],
+            [[8.8223, 8.6483, 8.6215], [8.3332, 8.6047, 8.7545], [8.6547, 8.6885, 8.7472]],
         ).to(torch_device)
 
-        self.assertTrue(torch.allclose(outputs.predicted_depth[0, :3, :3], expected_slice, atol=1e-6))
+        torch.testing.assert_close(predicted_depth[0, :3, :3], expected_slice, rtol=1e-4, atol=1e-4)
+
+        # -- `metric` depth model --
+        image_processor = DPTImageProcessorPil.from_pretrained(
+            "depth-anything/depth-anything-V2-metric-indoor-small-hf"
+        )
+        model = DepthAnythingForDepthEstimation.from_pretrained(
+            "depth-anything/depth-anything-V2-metric-indoor-small-hf"
+        ).to(torch_device)
+
+        inputs = image_processor(images=image, return_tensors="pt").to(torch_device)
+
+        # forward pass
+        with torch.no_grad():
+            outputs = model(**inputs)
+            predicted_depth = outputs.predicted_depth
+
+        # verify the predicted depth
+        expected_shape = torch.Size([1, 518, 686])
+        self.assertEqual(predicted_depth.shape, expected_shape)
+
+        expected_slice = torch.tensor(
+            [[1.3349, 1.2947, 1.2802], [1.2794, 1.2338, 1.2901], [1.2630, 1.2219, 1.2478]],
+        ).to(torch_device)
+
+        torch.testing.assert_close(predicted_depth[0, :3, :3], expected_slice, rtol=1e-4, atol=1e-4)

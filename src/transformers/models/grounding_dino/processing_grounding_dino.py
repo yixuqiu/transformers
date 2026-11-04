@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2024 The HuggingFace Inc. team.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,18 +15,22 @@
 Processor class for Grounding DINO.
 """
 
-from typing import List, Optional, Tuple, Union
+import warnings
+from typing import TYPE_CHECKING
 
-from ...image_processing_utils import BatchFeature
 from ...image_transforms import center_to_corners_format
-from ...image_utils import ImageInput
-from ...processing_utils import ProcessorMixin
-from ...tokenization_utils_base import BatchEncoding, PaddingStrategy, PreTokenizedInput, TextInput, TruncationStrategy
-from ...utils import TensorType, is_torch_available
+from ...processing_utils import ProcessingKwargs, ProcessorMixin
+from ...utils import TensorType, auto_docstring, is_torch_available
 
 
 if is_torch_available():
     import torch
+
+if TYPE_CHECKING:
+    from .modeling_grounding_dino import GroundingDinoObjectDetectionOutput
+
+
+AnnotationType = dict[str, int | str | list[dict]]
 
 
 def get_phrases_from_posmap(posmaps, input_ids):
@@ -56,120 +59,95 @@ def get_phrases_from_posmap(posmaps, input_ids):
     return token_ids
 
 
-class GroundingDinoProcessor(ProcessorMixin):
-    r"""
-    Constructs a Grounding DINO processor which wraps a Deformable DETR image processor and a BERT tokenizer into a
-    single processor.
-
-    [`GroundingDinoProcessor`] offers all the functionalities of [`GroundingDinoImageProcessor`] and
-    [`AutoTokenizer`]. See the docstring of [`~GroundingDinoProcessor.__call__`] and [`~GroundingDinoProcessor.decode`]
-    for more information.
-
-    Args:
-        image_processor (`GroundingDinoImageProcessor`):
-            An instance of [`GroundingDinoImageProcessor`]. The image processor is a required input.
-        tokenizer (`AutoTokenizer`):
-            An instance of ['PreTrainedTokenizer`]. The tokenizer is a required input.
+def _is_list_of_candidate_labels(text) -> bool:
+    """Check that text is list/tuple of strings and each string is a candidate label and not merged candidate labels text.
+    Merged candidate labels text is a string with candidate labels separated by a dot.
     """
+    if isinstance(text, (list, tuple)):
+        return all(isinstance(t, str) and "." not in t for t in text)
+    return False
 
-    attributes = ["image_processor", "tokenizer"]
-    image_processor_class = "GroundingDinoImageProcessor"
-    tokenizer_class = "AutoTokenizer"
+
+def _merge_candidate_labels_text(text: list[str]) -> str:
+    """
+    Merge candidate labels text into a single string. Ensure all labels are lowercase.
+    For example, ["A cat", "a dog"] -> "a cat. a dog."
+    """
+    labels = [t.strip().lower() for t in text]  # ensure lowercase
+    merged_labels_str = ". ".join(labels) + "."  # join with dot and add a dot at the end
+    return merged_labels_str
+
+
+class DictWithDeprecationWarning(dict):
+    message = (
+        "The key `labels` is will return integer ids in `GroundingDinoProcessor.post_process_grounded_object_detection` "
+        "output since v4.51.0. Use `text_labels` instead to retrieve string object names."
+    )
+
+    def __getitem__(self, key):
+        if key == "labels":
+            warnings.warn(self.message, FutureWarning)
+        return super().__getitem__(key)
+
+    def get(self, key, *args, **kwargs):
+        if key == "labels":
+            warnings.warn(self.message, FutureWarning)
+        return super().get(key, *args, **kwargs)
+
+
+class GroundingDinoProcessorKwargs(ProcessingKwargs, total=False):
+    _defaults = {
+        "text_kwargs": {
+            "add_special_tokens": True,
+            "padding": False,
+            "stride": 0,
+            "return_overflowing_tokens": False,
+            "return_special_tokens_mask": False,
+            "return_offsets_mapping": False,
+            "return_token_type_ids": True,
+            "return_length": False,
+            "verbose": True,
+        }
+    }
+
+
+@auto_docstring
+class GroundingDinoProcessor(ProcessorMixin):
+    valid_processor_kwargs = GroundingDinoProcessorKwargs
 
     def __init__(self, image_processor, tokenizer):
         super().__init__(image_processor, tokenizer)
 
-    def __call__(
-        self,
-        images: ImageInput = None,
-        text: Union[TextInput, PreTokenizedInput, List[TextInput], List[PreTokenizedInput]] = None,
-        add_special_tokens: bool = True,
-        padding: Union[bool, str, PaddingStrategy] = False,
-        truncation: Union[bool, str, TruncationStrategy] = None,
-        max_length: Optional[int] = None,
-        stride: int = 0,
-        pad_to_multiple_of: Optional[int] = None,
-        return_attention_mask: Optional[bool] = None,
-        return_overflowing_tokens: bool = False,
-        return_special_tokens_mask: bool = False,
-        return_offsets_mapping: bool = False,
-        return_token_type_ids: bool = True,
-        return_length: bool = False,
-        verbose: bool = True,
-        return_tensors: Optional[Union[str, TensorType]] = None,
-        **kwargs,
-    ) -> BatchEncoding:
-        """
-        This method uses [`GroundingDinoImageProcessor.__call__`] method to prepare image(s) for the model, and
-        [`BertTokenizerFast.__call__`] to prepare text for the model.
-
-        Please refer to the docstring of the above two methods for more information.
-        """
-        if images is None and text is None:
-            raise ValueError("You have to specify either images or text.")
-
-        # Get only text
-        if images is not None:
-            encoding_image_processor = self.image_processor(images, return_tensors=return_tensors)
-        else:
-            encoding_image_processor = BatchFeature()
-
+    def prepare_inputs_layout(self, images=None, text=None, videos=None, audio=None, **kwargs):
         if text is not None:
-            text_encoding = self.tokenizer(
-                text=text,
-                add_special_tokens=add_special_tokens,
-                padding=padding,
-                truncation=truncation,
-                max_length=max_length,
-                stride=stride,
-                pad_to_multiple_of=pad_to_multiple_of,
-                return_attention_mask=return_attention_mask,
-                return_overflowing_tokens=return_overflowing_tokens,
-                return_special_tokens_mask=return_special_tokens_mask,
-                return_offsets_mapping=return_offsets_mapping,
-                return_token_type_ids=return_token_type_ids,
-                return_length=return_length,
-                verbose=verbose,
-                return_tensors=return_tensors,
-                **kwargs,
-            )
-        else:
-            text_encoding = BatchEncoding()
+            text = self._preprocess_input_text(text)
+        return super().prepare_inputs_layout(images=images, text=text, videos=videos, audio=audio, **kwargs)
 
-        text_encoding.update(encoding_image_processor)
-
-        return text_encoding
-
-    # Copied from transformers.models.blip.processing_blip.BlipProcessor.batch_decode with BertTokenizerFast->PreTrainedTokenizer
-    def batch_decode(self, *args, **kwargs):
+    def _preprocess_input_text(self, text):
         """
-        This method forwards all its arguments to PreTrainedTokenizer's [`~PreTrainedTokenizer.batch_decode`]. Please
-        refer to the docstring of this method for more information.
+        Preprocess input text to ensure that labels are in the correct format for the model.
+        If the text is a list of candidate labels, merge the candidate labels into a single string,
+        for example, ["a cat", "a dog"] -> "a cat. a dog.". In case candidate labels are already in a form of
+        "a cat. a dog.", the text is returned as is.
         """
-        return self.tokenizer.batch_decode(*args, **kwargs)
 
-    # Copied from transformers.models.blip.processing_blip.BlipProcessor.decode with BertTokenizerFast->PreTrainedTokenizer
-    def decode(self, *args, **kwargs):
-        """
-        This method forwards all its arguments to PreTrainedTokenizer's [`~PreTrainedTokenizer.decode`]. Please refer to
-        the docstring of this method for more information.
-        """
-        return self.tokenizer.decode(*args, **kwargs)
+        if _is_list_of_candidate_labels(text):
+            text = _merge_candidate_labels_text(text)
 
-    @property
-    # Copied from transformers.models.blip.processing_blip.BlipProcessor.model_input_names
-    def model_input_names(self):
-        tokenizer_input_names = self.tokenizer.model_input_names
-        image_processor_input_names = self.image_processor.model_input_names
-        return list(dict.fromkeys(tokenizer_input_names + image_processor_input_names))
+        # for batched input
+        elif isinstance(text, (list, tuple)) and all(_is_list_of_candidate_labels(t) for t in text):
+            text = [_merge_candidate_labels_text(sample) for sample in text]
+
+        return text
 
     def post_process_grounded_object_detection(
         self,
-        outputs,
-        input_ids,
-        box_threshold: float = 0.25,
+        outputs: "GroundingDinoObjectDetectionOutput",
+        input_ids: TensorType | None = None,
+        threshold: float = 0.25,
         text_threshold: float = 0.25,
-        target_sizes: Union[TensorType, List[Tuple]] = None,
+        target_sizes: TensorType | list[tuple] | None = None,
+        text_labels: list[list[str]] | None = None,
     ):
         """
         Converts the raw output of [`GroundingDinoForObjectDetection`] into final bounding boxes in (top_left_x, top_left_y,
@@ -178,51 +156,73 @@ class GroundingDinoProcessor(ProcessorMixin):
         Args:
             outputs ([`GroundingDinoObjectDetectionOutput`]):
                 Raw outputs of the model.
-            input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`):
-                The token ids of the input text.
-            box_threshold (`float`, *optional*, defaults to 0.25):
-                Score threshold to keep object detection predictions.
+            input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+                The token ids of the input text. If not provided will be taken from the model output.
+            threshold (`float`, *optional*, defaults to 0.25):
+                Threshold to keep object detection predictions based on confidence score.
             text_threshold (`float`, *optional*, defaults to 0.25):
                 Score threshold to keep text detection predictions.
-            target_sizes (`torch.Tensor` or `List[Tuple[int, int]]`, *optional*):
-                Tensor of shape `(batch_size, 2)` or list of tuples (`Tuple[int, int]`) containing the target size
+            target_sizes (`torch.Tensor` or `list[tuple[int, int]]`, *optional*):
+                Tensor of shape `(batch_size, 2)` or list of tuples (`tuple[int, int]`) containing the target size
                 `(height, width)` of each image in the batch. If unset, predictions will not be resized.
+            text_labels (`list[list[str]]`, *optional*):
+                List of candidate labels to be detected on each image. At the moment it's *NOT used*, but required
+                to be in signature for the zero-shot object detection pipeline. Text labels are instead extracted
+                from the `input_ids` tensor provided in `outputs`.
+
         Returns:
-            `List[Dict]`: A list of dictionaries, each dictionary containing the scores, labels and boxes for an image
-            in the batch as predicted by the model.
+            `list[Dict]`: A list of dictionaries, each dictionary containing the
+                - **scores**: tensor of confidence scores for detected objects
+                - **boxes**: tensor of bounding boxes in [x0, y0, x1, y1] format
+                - **labels**: list of text labels for each detected object (will be replaced with integer ids in v4.51.0)
+                - **text_labels**: list of text labels for detected objects
         """
-        logits, boxes = outputs.logits, outputs.pred_boxes
+        batch_logits, batch_boxes = outputs.logits, outputs.pred_boxes
+        input_ids = input_ids if input_ids is not None else outputs.input_ids
 
-        if target_sizes is not None:
-            if len(logits) != len(target_sizes):
-                raise ValueError(
-                    "Make sure that you pass in as many target sizes as the batch dimension of the logits"
-                )
+        if target_sizes is not None and len(target_sizes) != len(batch_logits):
+            raise ValueError("Make sure that you pass in as many target sizes as the batch dimension of the logits")
 
-        probs = torch.sigmoid(logits)  # (batch_size, num_queries, 256)
-        scores = torch.max(probs, dim=-1)[0]  # (batch_size, num_queries)
+        batch_probs = torch.sigmoid(batch_logits)  # (batch_size, num_queries, 256)
+        batch_scores = torch.max(batch_probs, dim=-1)[0]  # (batch_size, num_queries)
 
         # Convert to [x0, y0, x1, y1] format
-        boxes = center_to_corners_format(boxes)
+        batch_boxes = center_to_corners_format(batch_boxes)
 
         # Convert from relative [0, 1] to absolute [0, height] coordinates
         if target_sizes is not None:
-            if isinstance(target_sizes, List):
+            if isinstance(target_sizes, list):
                 img_h = torch.Tensor([i[0] for i in target_sizes])
                 img_w = torch.Tensor([i[1] for i in target_sizes])
             else:
                 img_h, img_w = target_sizes.unbind(1)
 
-            scale_fct = torch.stack([img_w, img_h, img_w, img_h], dim=1).to(boxes.device)
-            boxes = boxes * scale_fct[:, None, :]
+            scale_fct = torch.stack([img_w, img_h, img_w, img_h], dim=1).to(batch_boxes.device)
+            batch_boxes = batch_boxes * scale_fct[:, None, :]
 
         results = []
-        for idx, (s, b, p) in enumerate(zip(scores, boxes, probs)):
-            score = s[s > box_threshold]
-            box = b[s > box_threshold]
-            prob = p[s > box_threshold]
+        for idx, (scores, boxes, probs) in enumerate(zip(batch_scores, batch_boxes, batch_probs)):
+            keep = scores > threshold
+            scores = scores[keep]
+            boxes = boxes[keep]
+
+            # extract text labels
+            prob = probs[keep]
             label_ids = get_phrases_from_posmap(prob > text_threshold, input_ids[idx])
-            label = self.batch_decode(label_ids)
-            results.append({"scores": score, "labels": label, "boxes": box})
+            objects_text_labels = self.batch_decode(label_ids)
+
+            result = DictWithDeprecationWarning(
+                {
+                    "scores": scores,
+                    "boxes": boxes,
+                    "text_labels": objects_text_labels,
+                    # TODO: @pavel, set labels to None since v4.51.0 or find a way to extract ids
+                    "labels": objects_text_labels,
+                }
+            )
+            results.append(result)
 
         return results
+
+
+__all__ = ["GroundingDinoProcessor"]

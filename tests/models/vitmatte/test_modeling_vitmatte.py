@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2023 The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,8 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" Testing suite for the PyTorch VitMatte model. """
-
+"""Testing suite for the PyTorch VitMatte model."""
 
 import unittest
 
@@ -21,6 +19,7 @@ from huggingface_hub import hf_hub_download
 
 from transformers import VitMatteConfig
 from transformers.testing_utils import (
+    require_timm,
     require_torch,
     slow,
     torch_device,
@@ -41,7 +40,7 @@ if is_torch_available():
 if is_vision_available():
     from PIL import Image
 
-    from transformers import VitMatteImageProcessor
+    from transformers import VitMatteImageProcessorPil
 
 
 class VitMatteModelTester:
@@ -139,53 +138,43 @@ class VitMatteModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCase
     all_model_classes = (VitMatteForImageMatting,) if is_torch_available() else ()
     pipeline_model_mapping = {}
 
-    fx_compatible = False
-    test_pruning = False
     test_resize_embeddings = False
-    test_head_masking = False
 
     def setUp(self):
         self.model_tester = VitMatteModelTester(self)
-        self.config_tester = ConfigTester(self, config_class=VitMatteConfig, has_text_modality=False, hidden_size=37)
+        self.config_tester = ConfigTester(
+            self,
+            config_class=VitMatteConfig,
+            has_text_modality=False,
+            hidden_size=32,
+            common_properties=["hidden_size"],
+        )
 
     def test_config(self):
-        self.create_and_test_config_common_properties()
-        self.config_tester.create_and_test_config_to_json_string()
-        self.config_tester.create_and_test_config_to_json_file()
-        self.config_tester.create_and_test_config_from_and_save_pretrained()
-        self.config_tester.create_and_test_config_with_num_labels()
-        self.config_tester.check_config_can_be_init_without_params()
-        self.config_tester.check_config_arguments_init()
-
-    def create_and_test_config_common_properties(self):
-        return
+        self.config_tester.run_common_tests()
 
     @unittest.skip(reason="VitMatte does not use inputs_embeds")
     def test_inputs_embeds(self):
         pass
 
-    @unittest.skip(reason="Training is not yet supported")
+    @unittest.skip(reason="This module does not support standalone training")
     def test_training(self):
         pass
 
-    @unittest.skip(reason="Training is not yet supported")
+    @unittest.skip(reason="This module does not support standalone training")
     def test_training_gradient_checkpointing(self):
         pass
 
-    @unittest.skip(
-        reason="This architecure seem to not compute gradients properly when using GC, check: https://github.com/huggingface/transformers/pull/27124"
-    )
-    def test_training_gradient_checkpointing_use_reentrant(self):
-        pass
-
-    @unittest.skip(
-        reason="This architecure seem to not compute gradients properly when using GC, check: https://github.com/huggingface/transformers/pull/27124"
-    )
+    @unittest.skip(reason="This module does not support standalone training")
     def test_training_gradient_checkpointing_use_reentrant_false(self):
         pass
 
+    @unittest.skip(reason="This module does not support standalone training")
+    def test_training_gradient_checkpointing_use_reentrant_true(self):
+        pass
+
     @unittest.skip(reason="ViTMatte does not support input and output embeddings")
-    def test_model_common_attributes(self):
+    def test_model_get_set_embeddings(self):
         pass
 
     def test_model(self):
@@ -237,12 +226,48 @@ class VitMatteModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCase
 
             check_hidden_states_output(inputs_dict, config, model_class)
 
+    @require_timm
+    def test_backbone_selection(self):
+        def _validate_backbone_init():
+            for model_class in self.all_model_classes:
+                model = model_class(config)
+                model.to(torch_device)
+                model.eval()
+
+                if model.__class__.__name__ == "VitMatteForImageMatting":
+                    # Confirm out_indices propagated to backbone
+                    self.assertEqual(len(model.backbone.out_indices), 2)
+
+        config, inputs_dict = self.model_tester.prepare_config_and_inputs_for_common()
+        config_dict = config.to_dict()
+        config_dict["use_pretrained_backbone"] = True
+        config_dict["backbone_config"] = None
+        config_dict["backbone_kwargs"] = {"out_indices": [-2, -1]}
+        # Force load_backbone path
+        config_dict["is_hybrid"] = False
+
+        # Load a timm backbone
+        config_dict["backbone"] = "resnet18"
+        config_dict["use_timm_backbone"] = True
+        config = config.__class__(**config_dict)
+        _validate_backbone_init()
+
+        # Load a HF backbone
+        config_dict = config.to_dict()
+        config_dict["use_pretrained_backbone"] = True
+        config_dict["backbone_config"] = None
+        config_dict["backbone_kwargs"] = {"out_indices": [-2, -1]}
+        config_dict["backbone"] = "facebook/dinov2-small"
+        config_dict["use_timm_backbone"] = False
+        config = config.__class__(**config_dict)
+        _validate_backbone_init()
+
 
 @require_torch
 class VitMatteModelIntegrationTest(unittest.TestCase):
     @slow
     def test_inference(self):
-        processor = VitMatteImageProcessor.from_pretrained("hustvl/vitmatte-small-composition-1k")
+        processor = VitMatteImageProcessorPil.from_pretrained("hustvl/vitmatte-small-composition-1k")
         model = VitMatteForImageMatting.from_pretrained("hustvl/vitmatte-small-composition-1k").to(torch_device)
 
         filepath = hf_hub_download(
@@ -266,4 +291,4 @@ class VitMatteModelIntegrationTest(unittest.TestCase):
         expected_slice = torch.tensor(
             [[0.9977, 0.9987, 0.9990], [0.9980, 0.9998, 0.9998], [0.9983, 0.9998, 0.9998]], device=torch_device
         )
-        self.assertTrue(torch.allclose(alphas[0, 0, :3, :3], expected_slice, atol=1e-4))
+        torch.testing.assert_close(alphas[0, 0, :3, :3], expected_slice, rtol=1e-4, atol=1e-4)

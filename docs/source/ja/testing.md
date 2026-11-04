@@ -35,11 +35,10 @@ rendered properly in your Markdown viewer.
 
    - [self-hosted (push)](https://github.com/huggingface/transformers/tree/main/.github/workflows/self-push.yml): `main` にコミットが行われた場合に、GPUで高速テストを実行します。このジョブは、`main` でのコミットが以下のフォルダーのコードを更新した場合にのみ実行されます：`src`、`tests`、`.github`（追加されたモデルカード、ノートブックなどの実行を防ぐため）。
 
-   - [self-hosted runner](https://github.com/huggingface/transformers/tree/main/.github/workflows/self-scheduled.yml): GPUで `tests` と `examples` の通常のテストと遅いテストを実行します。
+   - [self-hosted runner](https://github.com/huggingface/transformers/tree/main/.github/workflows/self-scheduled-caller.yml): GPUで `tests` と `examples` の通常のテストと遅いテストを実行します。
 
 ```bash
 RUN_SLOW=1 pytest tests/
-RUN_SLOW=1 pytest examples/
 ```
     結果は[here](https://github.com/huggingface/transformers/actions)で観察できます。
 
@@ -171,16 +170,16 @@ pytest -k "test and ada" tests/test_optimization.py
 時々、モデルに対して `accelerate` テストを実行する必要があります。たとえば、`OPT` 実行に対してこれらのテストを実行したい場合、コマンドに `-m accelerate_tests` を追加するだけで済みます：
 
 ```bash
-RUN_SLOW=1 pytest -m accelerate_tests tests/models/opt/test_modeling_opt.py 
+RUN_SLOW=1 pytest -m accelerate_tests tests/models/opt/test_modeling_opt.py
 ```
 
-### Run documentation tests 
+### Run documentation tests
 
 ドキュメンテーションの例が正しいかどうかをテストするには、`doctests` が合格しているかを確認する必要があります。
 例として、[`WhisperModel.forward` のドックストリング](https://github.com/huggingface/transformers/blob/main/src/transformers/models/whisper/modeling_whisper.py#L1017-L1035)を使用しましょう。
 
 
-```python 
+```python
 r"""
 Returns:
 
@@ -205,7 +204,7 @@ Example:
 
 指定したファイル内のすべてのドックストリング例を自動的にテストするために、以下の行を実行してください：
 
-```bash 
+```bash
 pytest --doctest-modules <path_to_file_or_dir>
 ```
 
@@ -445,13 +444,6 @@ CUDA_VISIBLE_DEVICES="1" pytest tests/utils/test_logging.py
 def test_example_with_multi_gpu():
 ```
 
-テストに `tensorflow` が必要な場合は、`require_tf` デコレータを使用します。例えば：
-
-```python no-style
-@require_tf
-def test_tf_thing_with_tensorflow():
-```
-
 これらのデコレータは積み重ねることができます。たとえば、テストが遅く、pytorch で少なくとも 1 つの GPU が必要な場合は、次のようになります。
 設定方法:
 
@@ -505,8 +497,8 @@ TRANSFORMERS_TEST_BACKEND="torch_npu" pytest tests/utils/test_logging.py
 
 これを使用するいくつかのテストがあります：
 
-- [test_trainer_distributed.py](https://github.com/huggingface/transformers/tree/main/tests/trainer/test_trainer_distributed.py)
-- [test_deepspeed.py](https://github.com/huggingface/transformers/tree/main/tests/deepspeed/test_deepspeed.py)
+- [test_trainer_distributed.py](https://github.com/huggingface/transformers/tree/main/tests/trainer/distributed/test_trainer_distributed.py)
+- [test_trainer_distributed_deepspeed.py](https://github.com/huggingface/transformers/tree/main/tests/trainer/distributed/test_trainer_distributed_deepspeed.py)
 
 実行ポイントにすぐに移動するには、これらのテスト内で `execute_subprocess_async` 呼び出しを検索してください。
 
@@ -703,7 +695,7 @@ from transformers.testing_utils import TestCasePlus
 
 class PathExampleTest(TestCasePlus):
     def test_something_involving_local_locations(self):
-        data_dir = self.tests_dir / "fixtures/tests_samples/wmt_en_ro"
+        data_dir = self.tests_dir / "fixtures/tests_samples/wmt16"
 ```
 
 もし、`pathlib` を介してパスを操作する必要がない場合、または単に文字列としてパスが必要な場合は、`pathlib` オブジェクトに `str()` を呼び出すか、`_str` で終わるアクセサを使用できます。例：
@@ -809,7 +801,7 @@ with ExtendSysPath(f"{bindir}/.."):
 
 
 ```python no-style
-@unittest.skip("this bug needs to be fixed")
+@unittest.skip(reason="this bug needs to be fixed")
 def test_feature_x():
 ```
 
@@ -1135,9 +1127,6 @@ if torch.cuda.is_available():
 import numpy as np
 
 np.random.seed(seed)
-
-# tf RNG
-tf.random.set_seed(seed)
 ```
 
 
@@ -1211,4 +1200,3 @@ cmd_that_may_fail || true
 
 - [Github Actions:](https://github.com/actions/toolkit/issues/399)
 - [CircleCI:](https://ideas.circleci.com/ideas/CCI-I-344)
-

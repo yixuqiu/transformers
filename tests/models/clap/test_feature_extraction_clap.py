@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2023 HuggingFace Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,7 +14,6 @@
 
 
 import itertools
-import random
 import unittest
 
 import numpy as np
@@ -26,34 +24,18 @@ from transformers.testing_utils import require_torch, require_torchaudio
 from transformers.trainer_utils import set_seed
 from transformers.utils.import_utils import is_torch_available
 
+from ...test_processing_common import floats_list
 from ...test_sequence_feature_extraction_common import SequenceFeatureExtractionTestMixin
 
 
 if is_torch_available():
     import torch
 
-global_rng = random.Random()
-
-
-# Copied from tests.models.whisper.test_feature_extraction_whisper.floats_list
-def floats_list(shape, scale=1.0, rng=None, name=None):
-    """Creates a random float32 tensor"""
-    if rng is None:
-        rng = global_rng
-
-    values = []
-    for batch_idx in range(shape[0]):
-        values.append([])
-        for _ in range(shape[1]):
-            values[-1].append(rng.random() * scale)
-
-    return values
-
 
 @require_torch
 @require_torchaudio
 # Copied from tests.models.whisper.test_feature_extraction_whisper.WhisperFeatureExtractionTester with Whisper->Clap
-class ClapFeatureExtractionTester(unittest.TestCase):
+class ClapFeatureExtractionTester:
     def __init__(
         self,
         parent,
@@ -162,11 +144,25 @@ class ClapFeatureExtractionTest(SequenceFeatureExtractionTestMixin, unittest.Tes
             pt_processed = feature_extractor.pad([{"input_features": inputs}], return_tensors="pt")
             self.assertTrue(pt_processed.input_features.dtype == torch.float32)
 
+    def test_padding_boolean(self):
+        feature_extractor = self.feature_extraction_class(**self.feat_extract_tester.prepare_feat_extract_dict())
+        speech_inputs = floats_list((1, 800))[0]
+
+        np.random.seed(0)
+        out_default = feature_extractor(speech_inputs, return_tensors="np").input_features
+        np.random.seed(0)
+        out_bool = feature_extractor(speech_inputs, padding=True, return_tensors="np").input_features
+        np.random.seed(0)
+        out_repeatpad = feature_extractor(speech_inputs, padding="repeatpad", return_tensors="np").input_features
+
+        self.assertTrue(np.allclose(out_bool, out_default, atol=1e-3))
+        self.assertTrue(np.allclose(out_bool, out_repeatpad, atol=1e-3))
+
     # Copied from tests.models.whisper.test_feature_extraction_whisper.WhisperFeatureExtractionTest._load_datasamples
     def _load_datasamples(self, num_samples):
         ds = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
         # automatic decoding with librispeech
-        speech_samples = ds.sort("id").select(range(num_samples))[:num_samples]["audio"]
+        speech_samples = ds.sort("id")[:num_samples]["audio"]
 
         return [x["array"] for x in speech_samples]
 
@@ -285,8 +281,8 @@ class ClapFeatureExtractionTest(SequenceFeatureExtractionTestMixin, unittest.Tes
             input_features = feature_extractor(input_speech, return_tensors="pt", padding=padding).input_features
             self.assertEqual(input_features.shape, (1, 4, 1001, 64))
 
-            self.assertTrue(torch.allclose(input_features[0, 0, idx_in_mel[0]], EXPECTED_VALUES[0], atol=1e-4))
-            self.assertTrue(torch.allclose(input_features[0, 0, idx_in_mel[1]], EXPECTED_VALUES[1], atol=1e-4))
+            torch.testing.assert_close(input_features[0, 0, idx_in_mel[0]], EXPECTED_VALUES[0], rtol=1e-4, atol=1e-4)
+            torch.testing.assert_close(input_features[0, 0, idx_in_mel[1]], EXPECTED_VALUES[1], rtol=1e-4, atol=1e-4)
 
             self.assertTrue(torch.all(input_features[0, 0] == input_features[0, 1]))
             self.assertTrue(torch.all(input_features[0, 0] == input_features[0, 2]))
@@ -408,8 +404,8 @@ class ClapFeatureExtractionTest(SequenceFeatureExtractionTestMixin, unittest.Tes
                 input_speech, return_tensors="pt", truncation="rand_trunc", padding=padding
             ).input_features
             self.assertEqual(input_features.shape, (1, 1, 1001, 64))
-            self.assertTrue(torch.allclose(input_features[0, 0, idx_in_mel[0]], EXPECTED_VALUES[0], atol=1e-4))
-            self.assertTrue(torch.allclose(input_features[0, 0, idx_in_mel[1]], EXPECTED_VALUES[1], atol=1e-4))
+            torch.testing.assert_close(input_features[0, 0, idx_in_mel[0]], EXPECTED_VALUES[0], rtol=1e-4, atol=1e-4)
+            torch.testing.assert_close(input_features[0, 0, idx_in_mel[1]], EXPECTED_VALUES[1], rtol=1e-4, atol=1e-4)
 
     def test_integration_fusion_long_input(self):
         # fmt: off
@@ -475,7 +471,7 @@ class ClapFeatureExtractionTest(SequenceFeatureExtractionTestMixin, unittest.Tes
             set_seed(987654321)
             input_features = feature_extractor(input_speech, return_tensors="pt", padding=padding).input_features
             self.assertEqual(input_features.shape, (1, 4, 1001, 64))
-            self.assertTrue(torch.allclose(input_features[0, block_idx, MEL_BIN], EXPECTED_VALUES, atol=1e-3))
+            torch.testing.assert_close(input_features[0, block_idx, MEL_BIN], EXPECTED_VALUES, rtol=1e-3, atol=1e-3)
 
     def test_integration_rand_trunc_long_input(self):
         # fmt: off
@@ -544,4 +540,4 @@ class ClapFeatureExtractionTest(SequenceFeatureExtractionTestMixin, unittest.Tes
                 input_speech, return_tensors="pt", truncation="rand_trunc", padding=padding
             ).input_features
             self.assertEqual(input_features.shape, (1, 1, 1001, 64))
-            self.assertTrue(torch.allclose(input_features[0, 0, MEL_BIN], EXPECTED_VALUES, atol=1e-4))
+            torch.testing.assert_close(input_features[0, 0, MEL_BIN], EXPECTED_VALUES, rtol=1e-4, atol=1e-4)

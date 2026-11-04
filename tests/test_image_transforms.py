@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2022 HuggingFace Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,23 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import io
 import unittest
 
 import numpy as np
 from parameterized import parameterized
 
-from transformers.testing_utils import require_flax, require_tf, require_torch, require_vision
-from transformers.utils.import_utils import is_flax_available, is_tf_available, is_torch_available, is_vision_available
+from transformers.testing_utils import require_torch, require_vision
+from transformers.utils.import_utils import is_torch_available, is_vision_available
 
 
 if is_torch_available():
     import torch
-
-if is_tf_available():
-    import tensorflow as tf
-
-if is_flax_available():
-    import jax
 
 if is_vision_available():
     import PIL.Image
@@ -123,20 +117,6 @@ class ImageTransformsTester(unittest.TestCase):
         self.assertTrue(np_img.min() == 0)
         self.assertTrue(np_img.max() == 1)
 
-    @require_tf
-    def test_to_pil_image_from_tensorflow(self):
-        # channels_first
-        image = tf.random.uniform((3, 4, 5))
-        pil_image = to_pil_image(image)
-        self.assertIsInstance(pil_image, PIL.Image.Image)
-        self.assertEqual(pil_image.size, (5, 4))
-
-        # channels_last
-        image = tf.random.uniform((4, 5, 3))
-        pil_image = to_pil_image(image)
-        self.assertIsInstance(pil_image, PIL.Image.Image)
-        self.assertEqual(pil_image.size, (5, 4))
-
     @require_torch
     def test_to_pil_image_from_torch(self):
         # channels first
@@ -147,21 +127,6 @@ class ImageTransformsTester(unittest.TestCase):
 
         # channels last
         image = torch.rand((4, 5, 3))
-        pil_image = to_pil_image(image)
-        self.assertIsInstance(pil_image, PIL.Image.Image)
-        self.assertEqual(pil_image.size, (5, 4))
-
-    @require_flax
-    def test_to_pil_image_from_jax(self):
-        key = jax.random.PRNGKey(0)
-        # channel first
-        image = jax.random.uniform(key, (3, 4, 5))
-        pil_image = to_pil_image(image)
-        self.assertIsInstance(pil_image, PIL.Image.Image)
-        self.assertEqual(pil_image.size, (5, 4))
-
-        # channel last
-        image = jax.random.uniform(key, (4, 5, 3))
         pil_image = to_pil_image(image)
         self.assertIsInstance(pil_image, PIL.Image.Image)
         self.assertEqual(pil_image.size, (5, 4))
@@ -282,7 +247,7 @@ class ImageTransformsTester(unittest.TestCase):
 
         # Test that exception is raised if inputs are incorrect
         # Not a numpy array image
-        with self.assertRaises(ValueError):
+        with self.assertRaises(TypeError):
             normalize(5, 5, 5)
 
         # Number of mean values != number of channels
@@ -326,8 +291,8 @@ class ImageTransformsTester(unittest.TestCase):
 
         # Test float16 image input keeps float16 dtype
         image = np.random.randint(0, 256, (224, 224, 3)).astype(np.float16) / 255
-        mean = (0.5, 0.6, 0.7)
-        std = (0.1, 0.2, 0.3)
+        mean = np.array((0.5, 0.6, 0.7))
+        std = np.array((0.1, 0.2, 0.3))
 
         # The mean and std are cast to match the dtype of the input image
         cast_mean = np.array(mean, dtype=np.float16)
@@ -368,6 +333,10 @@ class ImageTransformsTester(unittest.TestCase):
         self.assertIsInstance(cropped_image, np.ndarray)
         self.assertEqual(cropped_image.shape, (300, 260, 3))
         self.assertTrue(np.allclose(cropped_image, expected_image))
+
+        # Test that odd numbered padding requirement still leads to correct output dimensions
+        cropped_image = center_crop(image, (300, 259), data_format="channels_last")
+        self.assertEqual(cropped_image.shape, (300, 259, 3))
 
         # Test image with 4 channels is cropped correctly
         image = np.random.randint(0, 256, (224, 224, 4))
@@ -575,34 +544,90 @@ class ImageTransformsTester(unittest.TestCase):
             )
         )
 
+        # Test that padding works on batched images
+        image = np.array(
+            [
+                [[0, 1], [2, 3]],
+            ]
+        )[None, ...]
+        expected_image = np.array(
+            [
+                [[0, 0], [0, 1], [2, 3]],
+                [[0, 0], [0, 0], [0, 0]],
+            ]
+        )[None, ...]
+        # fmt: on
+        self.assertTrue(
+            np.allclose(
+                expected_image, pad(image, ((0, 1), (1, 0)), mode="constant", input_data_format="channels_last")
+            )
+        )
+
     @require_vision
     def test_convert_to_rgb(self):
         # Test that an RGBA image is converted to RGB
-        image = np.array([[[1, 2, 3, 4], [5, 6, 7, 8]]], dtype=np.uint8)
+        image = np.array([[[1, 2, 3, 0], [5, 6, 7, 255]]], dtype=np.uint8)
         pil_image = PIL.Image.fromarray(image)
         self.assertEqual(pil_image.mode, "RGBA")
         self.assertEqual(pil_image.size, (2, 1))
 
-        # For the moment, numpy images are returned as is
-        rgb_image = convert_to_rgb(image)
-        self.assertEqual(rgb_image.shape, (1, 2, 4))
+        # test that it works also for numpy images. Dummy image
+        # has ambiguous channel format so by default it is assumed to
+        # be RGB image
+        rgb_image = convert_to_rgb(image, return_numpy=True)
+        self.assertEqual(rgb_image.shape, (3, 2, 4))
         self.assertTrue(np.allclose(rgb_image, image))
 
-        # And PIL images are converted
+        # If we pass explicit channel-format, it is converted from RGBA to RGB
+        rgb_image = convert_to_rgb(image, return_numpy=True, input_data_format="channels_last")
+        self.assertEqual(rgb_image.shape, (1, 2, 3))
+        self.assertTrue(np.array_equal(rgb_image, np.array([[[255, 255, 255], [5, 6, 7]]])))
+
+        # And PIL images are converted same way but without channel-layout ambiguity
         rgb_image = convert_to_rgb(pil_image)
         self.assertEqual(rgb_image.mode, "RGB")
         self.assertEqual(rgb_image.size, (2, 1))
-        self.assertTrue(np.allclose(np.array(rgb_image), np.array([[[1, 2, 3], [5, 6, 7]]], dtype=np.uint8)))
+        self.assertTrue(np.array_equal(np.array(rgb_image), np.array([[[255, 255, 255], [5, 6, 7]]])))
 
-        # Test that a grayscale image is converted to RGB
+        semi_transparent = PIL.Image.new("RGBA", (1, 1), (255, 0, 0, 128))
+        self.assertEqual(convert_to_rgb(semi_transparent).getpixel((0, 0)), (255, 127, 127))
+
+        # Test that a grayscale image can also be converted to RGB
         image = np.array([[0, 255]], dtype=np.uint8)
         pil_image = PIL.Image.fromarray(image)
         self.assertEqual(pil_image.mode, "L")
         self.assertEqual(pil_image.size, (2, 1))
+
         rgb_image = convert_to_rgb(pil_image)
         self.assertEqual(rgb_image.mode, "RGB")
         self.assertEqual(rgb_image.size, (2, 1))
         self.assertTrue(np.allclose(np.array(rgb_image), np.array([[[0, 0, 0], [255, 255, 255]]], dtype=np.uint8)))
+
+    @parameterized.expand(["RGB", "L", "P"])
+    def test_convert_to_rgb_png_transparency(self, mode):
+        image = PIL.Image.new(mode, (2, 1))
+        if mode == "RGB":
+            image.putdata([(255, 0, 0), (0, 0, 255)])
+            transparency = (255, 0, 0)
+        elif mode == "L":
+            image.putdata([0, 128])
+            transparency = 0
+        else:
+            image.putpalette([255, 0, 0, 0, 0, 255] + [0] * (256 * 3 - 6))
+            image.putdata([0, 1])
+            transparency = 0
+
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG", transparency=transparency)
+        buffer.seek(0)
+        image = PIL.Image.open(buffer)
+        self.assertEqual(image.mode, mode)
+        self.assertEqual(image.info["transparency"], transparency)
+
+        rgb_image = convert_to_rgb(image)
+        self.assertEqual(rgb_image.mode, "RGB")
+        self.assertEqual(rgb_image.getpixel((0, 0)), (255, 255, 255))
+        self.assertEqual(rgb_image.getpixel((1, 0)), (128, 128, 128) if mode == "L" else (0, 0, 255))
 
     def test_flip_channel_order(self):
         # fmt: off

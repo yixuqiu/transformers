@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2020 The HuggingFace Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import os
 import tempfile
 import unittest
 
@@ -40,7 +38,7 @@ if is_torch_available():
     from transformers.models.distilbert.modeling_distilbert import _create_sinusoidal_embeddings
 
 
-class DistilBertModelTester(object):
+class DistilBertModelTester:
     def __init__(
         self,
         parent,
@@ -215,7 +213,6 @@ class DistilBertModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCa
         {
             "feature-extraction": DistilBertModel,
             "fill-mask": DistilBertForMaskedLM,
-            "question-answering": DistilBertForQuestionAnswering,
             "text-classification": DistilBertForSequenceClassification,
             "token-classification": DistilBertForTokenClassification,
             "zero-shot": DistilBertForSequenceClassification,
@@ -223,8 +220,6 @@ class DistilBertModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCa
         if is_torch_available()
         else {}
     )
-    fx_compatible = True
-    test_pruning = True
     test_resize_embeddings = True
     test_resize_position_embeddings = True
 
@@ -274,28 +269,6 @@ class DistilBertModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCa
         model = DistilBertModel.from_pretrained(model_name)
         self.assertIsNotNone(model)
 
-    @slow
-    @require_torch_accelerator
-    def test_torchscript_device_change(self):
-        config, inputs_dict = self.model_tester.prepare_config_and_inputs_for_common()
-        for model_class in self.all_model_classes:
-            # BertForMultipleChoice behaves incorrectly in JIT environments.
-            if model_class == DistilBertForMultipleChoice:
-                return
-
-            config.torchscript = True
-            model = model_class(config=config)
-
-            inputs_dict = self._prepare_for_class(inputs_dict, model_class)
-            traced_model = torch.jit.trace(
-                model, (inputs_dict["input_ids"].to("cpu"), inputs_dict["attention_mask"].to("cpu"))
-            )
-
-            with tempfile.TemporaryDirectory() as tmp:
-                torch.jit.save(traced_model, os.path.join(tmp, "traced_model.pt"))
-                loaded = torch.jit.load(os.path.join(tmp, "traced_model.pt"), map_location=torch_device)
-                loaded(inputs_dict["input_ids"].to(torch_device), inputs_dict["attention_mask"].to(torch_device))
-
     # Because DistilBertForMultipleChoice requires inputs with different shapes we need to override this test.
     @require_flash_attn
     @require_torch_accelerator
@@ -328,17 +301,17 @@ class DistilBertModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCa
             with tempfile.TemporaryDirectory() as tmpdirname:
                 model.save_pretrained(tmpdirname)
                 model_fa = model_class.from_pretrained(
-                    tmpdirname, torch_dtype=torch.bfloat16, attn_implementation="flash_attention_2"
+                    tmpdirname, dtype=torch.bfloat16, attn_implementation="flash_attention_2"
                 )
                 model_fa.to(torch_device)
 
-                model = model_class.from_pretrained(tmpdirname, torch_dtype=torch.bfloat16)
+                model = model_class.from_pretrained(tmpdirname, dtype=torch.bfloat16)
                 model.to(torch_device)
 
                 logits = model(dummy_input, output_hidden_states=True).hidden_states[-1]
                 logits_fa = model_fa(dummy_input, output_hidden_states=True).hidden_states[-1]
 
-                self.assertTrue(torch.allclose(logits_fa, logits, atol=4e-2, rtol=4e-2))
+                torch.testing.assert_close(logits_fa, logits, rtol=4e-2, atol=4e-2)
 
                 output_fa = model_fa(dummy_input, attention_mask=dummy_attention_mask, output_hidden_states=True)
                 logits_fa = output_fa.hidden_states[-1]
@@ -346,7 +319,7 @@ class DistilBertModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCa
                 output = model(dummy_input, attention_mask=dummy_attention_mask, output_hidden_states=True)
                 logits = output.hidden_states[-1]
 
-                self.assertTrue(torch.allclose(logits_fa[1:], logits[1:], atol=4e-2, rtol=4e-2))
+                torch.testing.assert_close(logits_fa[1:], logits[1:], rtol=4e-2, atol=4e-2)
 
     # Because DistilBertForMultipleChoice requires inputs with different shapes we need to override this test.
     @require_flash_attn
@@ -380,20 +353,20 @@ class DistilBertModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCa
             with tempfile.TemporaryDirectory() as tmpdirname:
                 model.save_pretrained(tmpdirname)
                 model_fa = model_class.from_pretrained(
-                    tmpdirname, torch_dtype=torch.bfloat16, attn_implementation="flash_attention_2"
+                    tmpdirname, dtype=torch.bfloat16, attn_implementation="flash_attention_2"
                 )
                 model_fa.to(torch_device)
 
                 model = model_class.from_pretrained(
                     tmpdirname,
-                    torch_dtype=torch.bfloat16,
+                    dtype=torch.bfloat16,
                 )
                 model.to(torch_device)
 
                 logits = model(dummy_input, output_hidden_states=True).hidden_states[-1]
                 logits_fa = model_fa(dummy_input, output_hidden_states=True).hidden_states[-1]
 
-                self.assertTrue(torch.allclose(logits_fa, logits, atol=4e-2, rtol=4e-2))
+                torch.testing.assert_close(logits_fa, logits, rtol=4e-2, atol=4e-2)
 
                 output_fa = model_fa(dummy_input, attention_mask=dummy_attention_mask, output_hidden_states=True)
                 logits_fa = output_fa.hidden_states[-1]
@@ -401,11 +374,11 @@ class DistilBertModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCa
                 output = model(dummy_input, attention_mask=dummy_attention_mask, output_hidden_states=True)
                 logits = output.hidden_states[-1]
 
-                self.assertTrue(torch.allclose(logits_fa[:-1], logits[:-1], atol=4e-2, rtol=4e-2))
+                torch.testing.assert_close(logits_fa[:-1], logits[:-1], rtol=4e-2, atol=4e-2)
 
 
 @require_torch
-class DistilBertModelIntergrationTest(unittest.TestCase):
+class DistilBertModelIntegrationTest(unittest.TestCase):
     @slow
     def test_inference_no_head_absolute_embedding(self):
         model = DistilBertModel.from_pretrained("distilbert-base-uncased")
@@ -419,4 +392,4 @@ class DistilBertModelIntergrationTest(unittest.TestCase):
             [[[-0.1639, 0.3299, 0.1648], [-0.1746, 0.3289, 0.1710], [-0.1884, 0.3357, 0.1810]]]
         )
 
-        self.assertTrue(torch.allclose(output[:, 1:4, 1:4], expected_slice, atol=1e-4))
+        torch.testing.assert_close(output[:, 1:4, 1:4], expected_slice, rtol=1e-4, atol=1e-4)

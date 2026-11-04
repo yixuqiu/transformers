@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2018 Microsoft Authors and the HuggingFace Inc. team.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -34,7 +33,7 @@ if is_torch_available():
     )
 
 
-class DebertaModelTester(object):
+class DebertaModelTester:
     def __init__(
         self,
         parent,
@@ -229,7 +228,6 @@ class DebertaModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCase)
         {
             "feature-extraction": DebertaModel,
             "fill-mask": DebertaForMaskedLM,
-            "question-answering": DebertaForQuestionAnswering,
             "text-classification": DebertaForSequenceClassification,
             "token-classification": DebertaForTokenClassification,
             "zero-shot": DebertaForSequenceClassification,
@@ -238,15 +236,11 @@ class DebertaModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCase)
         else {}
     )
 
-    fx_compatible = True
-    test_torchscript = False
-    test_pruning = False
-    test_head_masking = False
     is_encoder_decoder = False
 
     def setUp(self):
         self.model_tester = DebertaModelTester(self)
-        self.config_tester = ConfigTester(self, config_class=DebertaConfig, hidden_size=37)
+        self.config_tester = ConfigTester(self, config_class=DebertaConfig, hidden_size=32)
 
     def test_config(self):
         self.config_tester.run_common_tests()
@@ -298,4 +292,4 @@ class DebertaModelIntegrationTest(unittest.TestCase):
         expected_slice = torch.tensor(
             [[[-0.5986, -0.8055, -0.8462], [1.4484, -0.9348, -0.8059], [0.3123, 0.0032, -1.4131]]]
         )
-        self.assertTrue(torch.allclose(output[:, 1:4, 1:4], expected_slice, atol=1e-4), f"{output[:, 1:4, 1:4]}")
+        torch.testing.assert_close(output[:, 1:4, 1:4], expected_slice, rtol=1e-4, atol=1e-4)

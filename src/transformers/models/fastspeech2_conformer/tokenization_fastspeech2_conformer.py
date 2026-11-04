@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2023 The HuggingFace Team and The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,13 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Tokenization classes for FastSpeech2Conformer."""
+
 import json
 import os
-from typing import Optional, Tuple
 
 import regex
 
-from ...tokenization_utils import PreTrainedTokenizer
+from ...tokenization_python import PreTrainedTokenizer
 from ...utils import logging, requires_backends
 
 
@@ -78,6 +77,7 @@ class FastSpeech2ConformerTokenizer(PreTrainedTokenizer):
             unk_token=unk_token,
             pad_token=pad_token,
             should_strip_spaces=should_strip_spaces,
+            special_tokens_pattern="none",
             **kwargs,
         )
 
@@ -142,7 +142,7 @@ class FastSpeech2ConformerTokenizer(PreTrainedTokenizer):
         )
         return tokens
 
-    def save_vocabulary(self, save_directory: str, filename_prefix: Optional[str] = None) -> Tuple[str]:
+    def save_vocabulary(self, save_directory: str, filename_prefix: str | None = None) -> tuple[str]:
         """
         Save the vocabulary and special tokens file to a directory.
 
@@ -182,3 +182,6 @@ class FastSpeech2ConformerTokenizer(PreTrainedTokenizer):
                 "You need to install g2p-en to use FastSpeech2ConformerTokenizer. "
                 "See https://pypi.org/project/g2p-en/ for installation."
             )
+
+
+__all__ = ["FastSpeech2ConformerTokenizer"]

@@ -14,11 +14,15 @@
 
 import unittest
 
-from transformers import MODEL_FOR_ZERO_SHOT_OBJECT_DETECTION_MAPPING, is_vision_available, pipeline
+from transformers import (
+    MODEL_FOR_ZERO_SHOT_OBJECT_DETECTION_MAPPING,
+    ZeroShotObjectDetectionPipeline,
+    is_vision_available,
+    pipeline,
+)
 from transformers.testing_utils import (
     is_pipeline_test,
     nested_simplify,
-    require_tf,
     require_torch,
     require_vision,
     slow,
@@ -43,9 +47,21 @@ else:
 class ZeroShotObjectDetectionPipelineTests(unittest.TestCase):
     model_mapping = MODEL_FOR_ZERO_SHOT_OBJECT_DETECTION_MAPPING
 
-    def get_test_pipeline(self, model, tokenizer, processor):
-        object_detector = pipeline(
-            "zero-shot-object-detection", model="hf-internal-testing/tiny-random-owlvit-object-detection"
+    def get_test_pipeline(
+        self,
+        model,
+        tokenizer=None,
+        image_processor=None,
+        feature_extractor=None,
+        processor=None,
+        dtype="float32",
+    ):
+        object_detector = ZeroShotObjectDetectionPipeline(
+            model=model,
+            processor=processor,
+            tokenizer=tokenizer,
+            image_processor=image_processor,
+            dtype=dtype,
         )
 
         examples = [
@@ -57,7 +73,7 @@ class ZeroShotObjectDetectionPipelineTests(unittest.TestCase):
         return object_detector, examples
 
     def run_pipeline_test(self, object_detector, examples):
-        outputs = object_detector(examples[0], threshold=0.0)
+        outputs = object_detector(examples[0].get("image"), examples[0].get("candidate_labels"), threshold=0.0)
 
         n = len(outputs)
         self.assertGreater(n, 0)
@@ -72,11 +88,6 @@ class ZeroShotObjectDetectionPipelineTests(unittest.TestCase):
                 for i in range(n)
             ],
         )
-
-    @require_tf
-    @unittest.skip("Zero Shot Object Detection not implemented in TF")
-    def test_small_model_tf(self):
-        pass
 
     @require_torch
     def test_small_model_pt(self):
@@ -138,7 +149,7 @@ class ZeroShotObjectDetectionPipelineTests(unittest.TestCase):
         object_detector = pipeline("zero-shot-object-detection")
 
         outputs = object_detector(
-            "http://images.cocodataset.org/val2017/000000039769.jpg",
+            "https://huggingface.co/datasets/hf-internal-testing/fixtures-coco/resolve/main/val2017/000000039769.jpg",
             candidate_labels=["cat", "remote", "couch"],
         )
         self.assertEqual(
@@ -155,11 +166,11 @@ class ZeroShotObjectDetectionPipelineTests(unittest.TestCase):
         outputs = object_detector(
             [
                 {
-                    "image": "http://images.cocodataset.org/val2017/000000039769.jpg",
+                    "image": "https://huggingface.co/datasets/hf-internal-testing/fixtures-coco/resolve/main/val2017/000000039769.jpg",
                     "candidate_labels": ["cat", "remote", "couch"],
                 },
                 {
-                    "image": "http://images.cocodataset.org/val2017/000000039769.jpg",
+                    "image": "https://huggingface.co/datasets/hf-internal-testing/fixtures-coco/resolve/main/val2017/000000039769.jpg",
                     "candidate_labels": ["cat", "remote", "couch"],
                 },
             ],
@@ -184,11 +195,6 @@ class ZeroShotObjectDetectionPipelineTests(unittest.TestCase):
             ],
         )
 
-    @require_tf
-    @unittest.skip("Zero Shot Object Detection not implemented in TF")
-    def test_large_model_tf(self):
-        pass
-
     @require_torch
     @slow
     def test_threshold(self):
@@ -196,7 +202,7 @@ class ZeroShotObjectDetectionPipelineTests(unittest.TestCase):
         object_detector = pipeline("zero-shot-object-detection")
 
         outputs = object_detector(
-            "http://images.cocodataset.org/val2017/000000039769.jpg",
+            "https://huggingface.co/datasets/hf-internal-testing/fixtures-coco/resolve/main/val2017/000000039769.jpg",
             candidate_labels=["cat", "remote", "couch"],
             threshold=threshold,
         )
@@ -216,7 +222,7 @@ class ZeroShotObjectDetectionPipelineTests(unittest.TestCase):
         object_detector = pipeline("zero-shot-object-detection")
 
         outputs = object_detector(
-            "http://images.cocodataset.org/val2017/000000039769.jpg",
+            "https://huggingface.co/datasets/hf-internal-testing/fixtures-coco/resolve/main/val2017/000000039769.jpg",
             candidate_labels=["cat", "remote", "couch"],
             top_k=top_k,
         )

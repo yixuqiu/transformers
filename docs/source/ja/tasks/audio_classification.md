@@ -128,7 +128,7 @@ DatasetDict({
 >>> feature_extractor = AutoFeatureExtractor.from_pretrained("facebook/wav2vec2-base")
 ```
 
-MInDS-14 データセットのサンプリング レートは 8000khz です (この情報は [データセット カード](https://huggingface.co/datasets/PolyAI/minds14) で確認できます)。つまり、データセットを再サンプリングする必要があります。事前トレーニングされた Wav2Vec2 モデルを使用するには、16000kHz に設定します。
+MInDS-14 データセットのサンプリング レートは 8khz です (この情報は [データセット カード](https://huggingface.co/datasets/PolyAI/minds14) で確認できます)。つまり、データセットを再サンプリングする必要があります。事前トレーニングされた Wav2Vec2 モデルを使用するには、16kHz に設定します。
 
 ```py
 >>> minds = minds.cast_column("audio", Audio(sampling_rate=16_000))
@@ -186,8 +186,6 @@ MInDS-14 データセットのサンプリング レートは 8000khz です (�
 
 ## Train
 
-<frameworkcontent>
-<pt>
 <Tip>
 
 [`Trainer`] を使用したモデルの微調整に慣れていない場合は、[こちら](../training#train-with-pytorch-trainer) の基本的なチュートリアルをご覧ください。
@@ -221,7 +219,7 @@ MInDS-14 データセットのサンプリング レートは 8000khz です (�
 ...     gradient_accumulation_steps=4,
 ...     per_device_eval_batch_size=32,
 ...     num_train_epochs=10,
-...     warmup_ratio=0.1,
+...     warmup_steps=0.1,
 ...     logging_steps=10,
 ...     load_best_model_at_end=True,
 ...     metric_for_best_model="accuracy",
@@ -233,7 +231,7 @@ MInDS-14 データセットのサンプリング レートは 8000khz です (�
 ...     args=training_args,
 ...     train_dataset=encoded_minds["train"],
 ...     eval_dataset=encoded_minds["test"],
-...     tokenizer=feature_extractor,
+...     processing_class=feature_extractor,
 ...     compute_metrics=compute_metrics,
 ... )
 
@@ -245,8 +243,6 @@ MInDS-14 データセットのサンプリング レートは 8000khz です (�
 ```py
 >>> trainer.push_to_hub()
 ```
-</pt>
-</frameworkcontent>
 
 <Tip>
 
@@ -287,8 +283,6 @@ MInDS-14 データセットのサンプリング レートは 8000khz です (�
 
 必要に応じて、`pipeline` の結果を手動で複製することもできます。
 
-<frameworkcontent>
-<pt>
 
 特徴抽出器をロードしてオーディオ ファイルを前処理し、`input`を PyTorch テンソルとして返します。
 
@@ -319,5 +313,3 @@ MInDS-14 データセットのサンプリング レートは 8000khz です (�
 >>> predicted_label
 'cash_deposit'
 ```
-</pt>
-</frameworkcontent>

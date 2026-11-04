@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2023 Microsoft Research and The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,28 +11,40 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" Testing suite for the PyTorch KOSMOS-2 model. """
-
+"""Testing suite for the PyTorch KOSMOS-2 model."""
 
 import copy
 import inspect
-import os
 import tempfile
 import unittest
 
 import numpy as np
-import requests
+import pytest
+from parameterized import parameterized
 
-from transformers import AutoModelForVision2Seq, AutoProcessor, Kosmos2Config
+from transformers import AutoModelForImageTextToText, AutoProcessor, Kosmos2Config
 from transformers.models.kosmos2.configuration_kosmos2 import Kosmos2TextConfig, Kosmos2VisionConfig
-from transformers.testing_utils import require_torch, require_vision, slow, torch_device
-from transformers.utils import is_torch_available, is_vision_available
+from transformers.testing_utils import (
+    IS_ROCM_SYSTEM,
+    IS_XPU_SYSTEM,
+    require_torch,
+    require_vision,
+    slow,
+    torch_device,
+)
+from transformers.utils import (
+    is_torch_available,
+    is_vision_available,
+)
 
+from ...generation.test_utils import GenerationTesterMixin, assert_similar_generate_outputs
 from ...test_configuration_common import ConfigTester
+from ...test_image_processing_common import load_test_image
 from ...test_modeling_common import (
+    TEST_EAGER_MATCHES_SDPA_INFERENCE_PARAMETERIZATION,
     ModelTesterMixin,
-    _config_zero_init,
     floats_tensor,
+    global_rng,
     ids_tensor,
     random_attention_mask,
 )
@@ -197,6 +208,9 @@ class Kosmos2ModelTester:
         self.text_model_tester = Kosmos2TextModelTester(parent, **text_kwargs)
         self.vision_model_tester = Kosmos2VisionModelTester(parent, **vision_kwargs)
         self.batch_size = self.text_model_tester.batch_size  # need bs for batching_equivalence test
+        self.num_hidden_layers = self.text_model_tester.num_hidden_layers
+        self.hidden_size = self.text_model_tester.hidden_size
+        self.seq_length = self.text_model_tester.seq_length
         self.latent_query_num = latent_query_num
         self.is_training = is_training
 
@@ -214,8 +228,8 @@ class Kosmos2ModelTester:
 
     def get_config(self):
         return Kosmos2Config(
-            self.text_model_tester.get_config().to_dict(),
-            self.vision_model_tester.get_config().to_dict(),
+            text_config=self.text_model_tester.get_config().to_dict(),
+            vision_config=self.vision_model_tester.get_config().to_dict(),
             latent_query_num=self.latent_query_num,
         )
 
@@ -245,25 +259,37 @@ class Kosmos2ModelTester:
 
 
 @require_torch
-class Kosmos2ModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCase):
+class Kosmos2ModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin, unittest.TestCase):
     all_model_classes = (Kosmos2Model, Kosmos2ForConditionalGeneration) if is_torch_available() else ()
-    all_generative_model_classes = (Kosmos2ForConditionalGeneration,) if is_torch_available() else ()
+    additional_model_inputs = ["input_ids", "image_embeds_position_mask"]
     pipeline_model_mapping = (
-        {"feature-extraction": Kosmos2Model, "image-to-text": Kosmos2ForConditionalGeneration}
+        {
+            "feature-extraction": Kosmos2Model,
+            "image-text-to-text": Kosmos2ForConditionalGeneration,
+        }
         if is_torch_available()
         else {}
     )
-    fx_compatible = False
-    test_head_masking = False
-    test_pruning = False
+
     test_resize_embeddings = False
     test_attention_outputs = False
+    _is_composite = True
 
-    # TODO: `image-to-text` pipeline for this model needs Processor.
+    # TODO: Tiny model needs fixing for `image-text-to-text` (latent_query_num=3 not compatible with num_image_tokens=64).
     def is_pipeline_test_to_skip(
-        self, pipeline_test_casse_name, config_class, model_architecture, tokenizer_name, processor_name
+        self,
+        pipeline_test_case_name,
+        config_class,
+        model_architecture,
+        tokenizer_name,
+        image_processor_name,
+        feature_extractor_name,
+        processor_name,
     ):
-        return pipeline_test_casse_name == "ImageToTextPipelineTests"
+        return (
+            pipeline_test_case_name == "ImageToTextPipelineTests"
+            or pipeline_test_case_name == "ImageTextToTextPipelineTests"
+        )
 
     def _prepare_for_class(self, inputs_dict, model_class, return_labels=False):
         inputs_dict = copy.deepcopy(inputs_dict)
@@ -280,25 +306,30 @@ class Kosmos2ModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCase)
 
     def setUp(self):
         self.model_tester = Kosmos2ModelTester(self)
-        self.config_tester = ConfigTester(self, config_class=Kosmos2Config, hidden_size=37)
+        self.config_tester = ConfigTester(
+            self, config_class=Kosmos2Config, has_text_modality=False, common_properties=["latent_query_num"]
+        )
+        global_rng.seed(0)
 
-    # overwrite from common to skip `image_to_text_projection.latent_query`
-    def test_initialization(self):
-        config, inputs_dict = self.model_tester.prepare_config_and_inputs_for_common()
+    def prepare_config_and_inputs_for_generate(self, batch_size=2):
+        # override - old testers that is composed of separate classes for vision/text
+        try:
+            original_batch_size = self.model_tester.batch_size
+            self.model_tester.text_model_tester.batch_size = batch_size
+            self.model_tester.vision_model_tester.batch_size = batch_size
+            config, inputs_dict = super().prepare_config_and_inputs_for_generate(batch_size=batch_size)
+        finally:
+            self.model_tester.text_model_tester.batch_size = original_batch_size
+            self.model_tester.vision_model_tester.batch_size = original_batch_size
+        return config, inputs_dict
 
-        configs_no_init = _config_zero_init(config)
-        for model_class in self.all_model_classes:
-            model = model_class(config=configs_no_init)
-            for name, param in model.named_parameters():
-                if param.requires_grad:
-                    if name == "image_to_text_projection.latent_query":
-                        # The original code use ` nn.Parameter(torch.randn(...))` for which this test won't pass.
-                        continue
-                    self.assertIn(
-                        ((param.data.mean() * 1e9).round() / 1e9).item(),
-                        [0.0, 1.0],
-                        msg=f"Parameter {name} of model {model_class} seems not properly initialized",
-                    )
+    def test_inputs_embeds_matches_input_ids(self):
+        position_ids = torch.arange(self.model_tester.seq_length).to(torch_device)
+        position_ids = position_ids[None, :].repeat(self.model_tester.batch_size, 1)
+        return super().test_inputs_embeds_matches_input_ids(position_ids=position_ids)
+
+    def test_config(self):
+        self.config_tester.run_common_tests()
 
     def test_model(self):
         config_and_inputs = self.model_tester.prepare_config_and_inputs()
@@ -333,94 +364,70 @@ class Kosmos2ModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCase)
                         v, reloaded_state[k], msg=lambda x: f"{model_class.__name__}: Tensor {k}: {x}"
                     )
                 # Checking there was no complain of missing weights
-                self.assertEqual(infos["missing_keys"], [])
+                self.assertEqual(infos["missing_keys"], set())
 
-    # overwrite from common in order to use `self.model_tester.text_model_tester.num_hidden_layers`
-    def test_hidden_states_output(self):
-        def check_hidden_states_output(inputs_dict, config, model_class):
-            model = model_class(config)
-            model.to(torch_device)
-            model.eval()
-
+    def test_image_to_text_projection_sdpa_matches_eager(self):
+        config, inputs_dict = self.model_tester.prepare_config_and_inputs_for_common()
+        model = Kosmos2Model(config).to(torch_device).eval()
+        outputs = {}
+        for attn_implementation in ("eager", "sdpa"):
+            model.set_attn_implementation(attn_implementation)
             with torch.no_grad():
-                outputs = model(**self._prepare_for_class(inputs_dict, model_class))
+                outputs[attn_implementation] = model(**inputs_dict).image_embeds
+        torch.testing.assert_close(outputs["sdpa"], outputs["eager"], rtol=1e-4, atol=1e-4)
 
-            hidden_states = outputs.hidden_states
+    @parameterized.expand(TEST_EAGER_MATCHES_SDPA_INFERENCE_PARAMETERIZATION)
+    @unittest.skip("KOSMOS-2 doesn't support padding")
+    def test_eager_matches_sdpa_inference(
+        self, name, dtype, padding_side, use_attention_mask, output_attentions, enable_kernels
+    ):
+        pass
 
-            expected_num_layers = getattr(
-                self.model_tester,
-                "expected_num_hidden_layers",
-                self.model_tester.text_model_tester.num_hidden_layers + 1,
+    @unittest.skip("KOSMOS-2 doesn't support padding")
+    def test_flash_attention_2_padding_matches_padding_free_with_position_ids(self):
+        pass
+
+    @unittest.skip("KOSMOS-2 doesn't support padding")
+    def test_flash_attention_2_padding_matches_padding_free_with_position_ids_and_fa_kwargs(self):
+        pass
+
+    @unittest.skip("KOSMOS-2 doesn't support padding")
+    def test_eager_padding_matches_padding_free_with_position_ids(self):
+        pass
+
+    @unittest.skip("KOSMOS-2 doesn't support padding")
+    def test_sdpa_padding_matches_padding_free_with_position_ids(self):
+        pass
+
+    @unittest.skip(reason="Kosmos2 has no separate base model without a head.")
+    def test_model_base_model_prefix(self):
+        pass
+
+    @pytest.mark.generate
+    @unittest.skip(reason="Kosmos2 does not support generation from no inputs")
+    def test_generate_without_input_ids(self):
+        pass
+
+    @pytest.mark.generate
+    def test_left_padding_compatibility(self):
+        # Overwrite -- kosmos2 needs to prepare `image_embeds_position_mask`, and it must be padded accordingly
+        _, inputs_dict = self.prepare_config_and_inputs_for_generate()
+        input_ids = inputs_dict["input_ids"]
+
+        def _prepare_image_embeds_position_mask(input_ids, pad_size):
+            image_embeds_position_mask = torch.zeros(
+                input_ids.shape[0], input_ids.shape[1] + pad_size, device=torch_device, dtype=input_ids.dtype
             )
-            self.assertEqual(len(hidden_states), expected_num_layers)
+            image_embeds_position_mask[:, (pad_size + 1) : pad_size + 1 + self.model_tester.latent_query_num] = 1
+            return image_embeds_position_mask
 
-            seq_length = self.model_tester.text_model_tester.seq_length
-
-            self.assertListEqual(
-                list(hidden_states[0].shape[-2:]),
-                [seq_length, self.model_tester.text_model_tester.hidden_size],
-            )
-
-        config, inputs_dict = self.model_tester.prepare_config_and_inputs_for_common()
-
-        for model_class in self.all_model_classes:
-            inputs_dict["output_hidden_states"] = True
-            check_hidden_states_output(inputs_dict, config, model_class)
-
-            # check that output_hidden_states also work using config
-            del inputs_dict["output_hidden_states"]
-            config.output_hidden_states = True
-
-            check_hidden_states_output(inputs_dict, config, model_class)
-
-    # overwrite from common in order to use `config.text_config.vocab_size` instead of `config.vocab_size`
-    def test_tie_model_weights(self):
-        if not self.test_torchscript:
-            return
-
-        config, inputs_dict = self.model_tester.prepare_config_and_inputs_for_common()
-
-        def check_same_values(layer_1, layer_2):
-            equal = True
-            for p1, p2 in zip(layer_1.weight, layer_2.weight):
-                if p1.data.ne(p2.data).sum() > 0:
-                    equal = False
-            return equal
-
-        for model_class in self.all_model_classes:
-            config.torchscript = True
-            model_not_tied = model_class(config)
-            if model_not_tied.get_output_embeddings() is None:
-                continue
-
-            config_tied = copy.deepcopy(config)
-            config_tied.torchscript = False
-            model_tied = model_class(config_tied)
-            params_tied = list(model_tied.parameters())
-            # Check that the embedding layer and decoding layer are the same in size and in value
-            # self.assertTrue(check_same_values(embeddings, decoding))
-
-            # # Check that after modification, they remain the same.
-            # embeddings.weight.data.div_(2)
-            # # Check that the embedding layer and decoding layer are the same in size and in value
-            # self.assertTrue(embeddings.weight.shape, decoding.weight.shape)
-            # self.assertTrue(check_same_values(embeddings, decoding))
-
-            # # Check that after modification, they remain the same.
-            # decoding.weight.data.div_(4)
-            # # Check that the embedding layer and decoding layer are the same in size and in value
-            # self.assertTrue(embeddings.weight.shape, decoding.weight.shape)
-            # self.assertTrue(check_same_values(embeddings, decoding))
-
-            # Check that after resize they remain tied.
-            model_tied.resize_token_embeddings(config.text_config.vocab_size + 10)
-            params_tied_2 = list(model_tied.parameters())
-            self.assertEqual(len(params_tied_2), len(params_tied))
-
-            # decoding.weight.data.mul_(20)
-            # # Check that the embedding layer and decoding layer are the same in size and in value
-            # self.assertTrue(model.transformer.wte.weight.shape, model.lm_head.weight.shape)
-            # self.assertTrue(check_same_values(model.transformer.wte, model.lm_head))
+        # `image_embeds_position_mask` is randomly generated in `prepare_config_and_inputs_for_generate`, and it must
+        # match its padded version for the test to be valid -- we need to pass both
+        unpadded_custom_inputs = {"image_embeds_position_mask": _prepare_image_embeds_position_mask(input_ids, 0)}
+        padded_custom_inputs = {"image_embeds_position_mask": _prepare_image_embeds_position_mask(input_ids, 32)}
+        super().test_left_padding_compatibility(
+            unpadded_custom_inputs=unpadded_custom_inputs, padded_custom_inputs=padded_custom_inputs
+        )
 
     @slow
     def test_model_from_pretrained(self):
@@ -428,91 +435,58 @@ class Kosmos2ModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCase)
         model = Kosmos2Model.from_pretrained(model_name)
         self.assertIsNotNone(model)
 
-    def _create_and_check_torchscript(self, config, inputs_dict):
-        if not self.test_torchscript:
-            return
+    @pytest.mark.generate
+    @parameterized.expand([("greedy", 1), ("beam search", 2)])
+    def test_generate_from_inputs_embeds(self, _, num_beams):
+        """Tests that we can generate from `inputs_embeds` instead of `input_ids` in LLMs, VLMs, etc"""
+        # NOTE: overwritten because Kosmos with ids prepares position ids differently from embeds
+        # If the model get ids, all pad tokens are masked from position ids. That is not possible with embeds
 
-        configs_no_init = _config_zero_init(config)  # To be sure we have no Nan
-        configs_no_init.torchscript = True
-        for model_class in self.all_model_classes:
-            model = model_class(config=configs_no_init)
-            model.to(torch_device)
-            model.eval()
-            inputs = self._prepare_for_class(inputs_dict, model_class)
+        # When supported, tests that the decoder model can generate from `inputs_embeds` instead of `input_ids`
+        # if fails, you should probably update the `prepare_inputs_for_generation` function
+        for model_class in self.all_generative_model_classes:
+            config, inputs_dict = self.prepare_config_and_inputs_for_generate()
+            config.is_decoder = True
 
-            main_input_name = model_class.main_input_name
+            # Skip models without explicit support
+            model = model_class(config).to(torch_device).eval()
 
-            try:
-                main_input = inputs[main_input_name]
-                model(main_input, inputs["input_ids"], inputs["image_embeds_position_mask"])
-                traced_model = torch.jit.trace(
-                    model, (main_input, inputs["input_ids"], inputs["image_embeds_position_mask"])
-                )
-            except RuntimeError:
-                self.fail("Couldn't trace module.")
-
-            with tempfile.TemporaryDirectory() as tmp_dir_name:
-                pt_file_name = os.path.join(tmp_dir_name, "traced_model.pt")
-
-                try:
-                    torch.jit.save(traced_model, pt_file_name)
-                except Exception:
-                    self.fail("Couldn't save module.")
-
-                try:
-                    loaded_model = torch.jit.load(pt_file_name)
-                except Exception:
-                    self.fail("Couldn't load module.")
-
-            model.to(torch_device)
-            model.eval()
-
-            loaded_model.to(torch_device)
-            loaded_model.eval()
-
-            model_state_dict = model.state_dict()
-            loaded_model_state_dict = loaded_model.state_dict()
-
-            non_persistent_buffers = {}
-            for key in loaded_model_state_dict.keys():
-                if key not in model_state_dict.keys():
-                    non_persistent_buffers[key] = loaded_model_state_dict[key]
-
-            loaded_model_state_dict = {
-                key: value for key, value in loaded_model_state_dict.items() if key not in non_persistent_buffers
+            # Traditional way of generating text
+            input_ids = inputs_dict.pop("input_ids")
+            input_ids[input_ids == config.get_text_config().pad_token_id] = 0
+            generation_kwargs = {
+                "return_dict_in_generate": True,
+                "output_scores": True,
+                "num_beams": num_beams,
+                "do_sample": False,
+                "max_new_tokens": 5,
+                "min_new_tokens": 5,  # generate exactly 5 tokens
+                "use_cache": True,
             }
+            outputs_from_ids = model.generate(input_ids=input_ids, **generation_kwargs, **inputs_dict)
+            self.assertEqual(outputs_from_ids.sequences.shape[:2], (input_ids.shape[0], input_ids.shape[1] + 5))
 
-            self.assertEqual(set(model_state_dict.keys()), set(loaded_model_state_dict.keys()))
+            # Same thing, but from input embeddings (`input_ids` is passed so the prompt is present in the output).
+            # The output of the two calls should be the same.
+            inputs_embeds = model.get_input_embeddings()(input_ids)
+            outputs_from_embeds = model.generate(
+                input_ids=input_ids, inputs_embeds=inputs_embeds, **generation_kwargs, **inputs_dict
+            )
+            assert_similar_generate_outputs(outputs_from_ids, outputs_from_embeds)
 
-            model_buffers = list(model.buffers())
-            for non_persistent_buffer in non_persistent_buffers.values():
-                found_buffer = False
-                for i, model_buffer in enumerate(model_buffers):
-                    if torch.equal(non_persistent_buffer, model_buffer):
-                        found_buffer = True
-                        break
-
-                self.assertTrue(found_buffer)
-                model_buffers.pop(i)
-
-            models_equal = True
-            for layer_name, p1 in model_state_dict.items():
-                if layer_name in loaded_model_state_dict:
-                    p2 = loaded_model_state_dict[layer_name]
-                    if p1.data.ne(p2.data).sum() > 0:
-                        models_equal = False
-
-            self.assertTrue(models_equal)
-
-            # Avoid memory leak. Without this, each call increase RAM usage by ~20MB.
-            # (Even with this call, there are still memory leak by ~0.04MB)
-            self.clear_torch_jit_class_registry()
+            # input_ids is not a required input on most models -- if we don't pass it, the newly generated tokens will
+            # be the same
+            outputs_from_embeds_wo_ids = model.generate(
+                inputs_embeds=inputs_embeds, **generation_kwargs, **inputs_dict
+            )
+            outputs_from_embeds.sequences = outputs_from_embeds.sequences[:, inputs_embeds.shape[1] :]
+            assert_similar_generate_outputs(outputs_from_embeds_wo_ids, outputs_from_embeds)
 
 
 # We will verify our results on an image of cute cats
 def prepare_img():
     url = "https://huggingface.co/hf-internal-testing/Kosmos2-test-image/resolve/main/demo.jpg"
-    im = Image.open(requests.get(url, stream=True).raw)
+    im = load_test_image(url)
     return im
 
 
@@ -546,13 +520,13 @@ class Kosmos2ModelIntegrationTest(unittest.TestCase):
         return scores, generated_ids, generated_text, processed_text, final_text_with_entities
 
     def test_snowman_image_captioning(self):
-        url = "https://huggingface.co/microsoft/kosmos-2-patch14-224/resolve/main/snowman.png"
+        url = "https://huggingface.co/datasets/hf-internal-testing/fixtures_image_utils/resolve/main/snowman.png"
 
-        image = Image.open(requests.get(url, stream=True).raw)
+        image = load_test_image(url)
         image.save("new_image.jpg")
         image = Image.open("new_image.jpg")
 
-        model = AutoModelForVision2Seq.from_pretrained("microsoft/kosmos-2-patch14-224").to(torch_device)
+        model = AutoModelForImageTextToText.from_pretrained("microsoft/kosmos-2-patch14-224").to(torch_device)
         processor = AutoProcessor.from_pretrained("microsoft/kosmos-2-patch14-224")
 
         prompt = "<grounding>An image of"
@@ -562,24 +536,26 @@ class Kosmos2ModelIntegrationTest(unittest.TestCase):
         processed_text = processed_text[0]
         final_text, entities = final_text_with_entities[0]
 
+        atol = 1e-4 if (IS_ROCM_SYSTEM or IS_XPU_SYSTEM) else 1e-5
+
         np.testing.assert_allclose(
             torch.concat(scores[1:4])[:3, :3].to("cpu").numpy(),
             np.array(
                 [
-                    [-1.5672581195831299, -5.007406711578369, 4.36448860168457],
-                    [-2.147017002105713, -4.966302871704102, 4.592559337615967],
-                    [-0.9352350831031799, -4.688288688659668, 6.240612983703613],
+                    [-1.5671477317810059, -5.007861137390137, 4.363498210906982],
+                    [-2.146806240081787, -4.966701984405518, 4.591914653778076],
+                    [-0.9352192878723145, -4.688364505767822, 6.2391180992126465],
                 ]
             ),
-            atol=1e-5,
+            atol=atol,
         )
         np.testing.assert_allclose(
             torch.concat(scores[-3:])[-3:, -3:].to("cpu").numpy(),
             np.array(
                 [
-                    [2.9916205406188965, 2.481820583343506, 4.646594524383545],
-                    [-2.8381078243255615, -2.9687185287475586, -2.6926779747009277],
-                    [-2.8909168243408203, -3.2228589057922363, -1.7056822776794434],
+                    [2.9931235313415527, 2.483426094055176, 4.648161888122559],
+                    [-2.8374814987182617, -2.968021869659424, -2.691683292388916],
+                    [-2.8913841247558594, -3.223571300506592, -1.704697847366333],
                 ]
             ),
             atol=1e-5,
@@ -624,20 +600,20 @@ class Kosmos2ModelIntegrationTest(unittest.TestCase):
             torch.concat(scores[1:4])[:3, :3].to("cpu").numpy(),
             np.array(
                 [
-                    [-0.9093570113182068, -4.578373908996582, 5.96360969543457],
-                    [2.452126979827881, -4.090598106384277, 8.738677024841309],
-                    [-0.7624598741531372, -4.771658897399902, 6.576295852661133],
+                    [-0.9066156148910522, -4.577853202819824, 5.964805603027344],
+                    [2.453021764755249, -4.090046405792236, 8.738329887390137],
+                    [-0.7618225812911987, -4.771708011627197, 6.576147556304932],
                 ]
             ),
-            atol=1e-5,
+            atol=atol,
         )
         np.testing.assert_allclose(
             torch.concat(scores[-3:])[-3:, -3:].to("cpu").numpy(),
             np.array(
                 [
-                    [-1.673659086227417, -2.162452220916748, -1.95430588722229],
-                    [-2.006824493408203, -2.2038745880126953, -1.24686861038208],
-                    [-3.2783470153808594, -2.814181089401245, -1.390632152557373],
+                    [-0.9908435344696045, -1.2352672815322876, -1.30216646194458],
+                    [-2.6381492614746094, -2.5162341594696045, -1.9107370376586914],
+                    [-3.098954439163208, -2.910688638687134, -1.501033067703247],
                 ]
             ),
             atol=1e-5,
@@ -651,10 +627,10 @@ class Kosmos2ModelIntegrationTest(unittest.TestCase):
                 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 64004, 64012, 34645, 247, 38, 1648, 12, 3391, 55,
                 24, 1648, 1338, 10, 43867, 1280, 32, 64007, 10, 30879, 64008, 64009, 64018, 65020, 64010, 12, 5, 1842,
                 4, 71, 17, 1679, 64007, 10, 3958, 64008, 64009, 64061, 64263, 64010, 6, 64007, 15719, 64008, 64009,
-                64253, 64617, 64010, 6, 8, 64007, 9626, 64008, 64009, 64413, 64545, 64010, 6, 23, 64007, 10, 4363,
-                64008, 64009, 64623, 64885, 64010, 2255, 8, 64007, 10, 3486, 64008, 64009, 64809, 65036, 64010, 1560,
-                2255, 4, 24, 43867, 1684, 7, 27, 3774, 5, 10356, 9, 5, 646, 6, 8, 22, 1684, 7, 30, 10, 2007, 8, 16239,
-                4337, 4, 2
+                64253, 64617, 64010, 6, 8, 64007, 9626, 64008, 64009, 64413, 64545, 64010, 6, 8, 17, 4371, 32, 64007,
+                10, 217, 17846, 64008, 64009, 64623, 64885, 64011, 64809, 65036, 64010, 8, 64007, 10, 4886, 64008,
+                64009, 64841, 65004, 64010, 4, 24, 43867, 1684, 7, 27, 3774, 5, 10356, 9, 5, 646, 6, 2305, 4082, 16, 10,
+                1946, 4825, 4, 2,
             ]
         ]
         # fmt: on
@@ -665,17 +641,17 @@ class Kosmos2ModelIntegrationTest(unittest.TestCase):
             "</phrase><object><patch_index_0005><patch_index_1007></object> in the snow. He is wearing<phrase> a hat"
             "</phrase><object><patch_index_0048><patch_index_0250></object>,<phrase> scarf</phrase><object>"
             "<patch_index_0240><patch_index_0604></object>, and<phrase> gloves</phrase><object><patch_index_0400>"
-            "<patch_index_0532></object>, with<phrase> a pot</phrase><object><patch_index_0610><patch_index_0872>"
-            "</object> nearby and<phrase> a cup</phrase><object><patch_index_0796><patch_index_1023></object> placed "
-            "nearby. The snowman appears to be enjoying the warmth of the fire, and it appears to have a warm and cozy "
-            "atmosphere."
+            "<patch_index_0532></object>, and is surrounded by<phrase> a few pots</phrase><object><patch_index_0610>"
+            "<patch_index_0872></delimiter_of_multi_objects/><patch_index_0796><patch_index_1023></object> and"
+            "<phrase> a bowl</phrase><object><patch_index_0828><patch_index_0991></object>. The snowman appears to "
+            "be enjoying the warmth of the fire, possibly preparing for a winter adventure."
         )
         self.assertEqual(processed_text, EXPECTED_PROCESSED_TEXT_LONG)
 
         EXPECTED_FINAL_TEXT_LONG = (
             "Describe this image in detail: The image features a snowman sitting by a campfire in the snow. He is "
-            "wearing a hat, scarf, and gloves, with a pot nearby and a cup placed nearby. The snowman appears to be "
-            "enjoying the warmth of the fire, and it appears to have a warm and cozy atmosphere."
+            "wearing a hat, scarf, and gloves, and is surrounded by a few pots and a bowl. The snowman appears to be "
+            "enjoying the warmth of the fire, possibly preparing for a winter adventure."
         )
         self.assertEqual(final_text, EXPECTED_FINAL_TEXT_LONG)
 
@@ -684,19 +660,23 @@ class Kosmos2ModelIntegrationTest(unittest.TestCase):
             ("a hat", (109, 114), [(0.515625, 0.046875, 0.828125, 0.234375)]),
             ("scarf", (116, 121), [(0.515625, 0.234375, 0.890625, 0.578125)]),
             ("gloves", (127, 133), [(0.515625, 0.390625, 0.640625, 0.515625)]),
-            ("a pot", (140, 145), [(0.078125, 0.609375, 0.265625, 0.859375)]),
-            ("a cup", (157, 162), [(0.890625, 0.765625, 0.984375, 0.984375)]),
+            (
+                "a few pots",
+                (156, 166),
+                [(0.078125, 0.609375, 0.265625, 0.859375), (0.890625, 0.765625, 0.984375, 0.984375)],
+            ),
+            ("a bowl", (171, 177), [(0.890625, 0.796875, 0.984375, 0.953125)]),
         ]
         self.assertListEqual(entities, EXPECTED_ENTITIES_LONG)
 
     def test_snowman_image_captioning_batch(self):
-        url = "https://huggingface.co/microsoft/kosmos-2-patch14-224/resolve/main/snowman.png"
+        url = "https://huggingface.co/datasets/hf-internal-testing/fixtures_image_utils/resolve/main/snowman.png"
 
-        image = Image.open(requests.get(url, stream=True).raw)
+        image = load_test_image(url)
         image.save("new_image.jpg")
         image = Image.open("new_image.jpg")
 
-        model = AutoModelForVision2Seq.from_pretrained("microsoft/kosmos-2-patch14-224").to(torch_device)
+        model = AutoModelForImageTextToText.from_pretrained("microsoft/kosmos-2-patch14-224").to(torch_device)
 
         prompt = ["<grounding>Describe this image in detail:", "<grounding>An image of"]
 
@@ -709,27 +689,26 @@ class Kosmos2ModelIntegrationTest(unittest.TestCase):
         all_final_text = [x[0] for x in final_text_with_entities]
         all_entities = [x[1] for x in final_text_with_entities]
 
-        # left padding gives identical results as non-padding
         EXPECTED_PROCESSED_TEXT_0 = (
             "<grounding> Describe this image in detail: The image features a snowman sitting by<phrase> a campfire"
             "</phrase><object><patch_index_0005><patch_index_1007></object> in the snow. He is wearing<phrase> a hat"
             "</phrase><object><patch_index_0048><patch_index_0250></object>,<phrase> scarf</phrase><object>"
             "<patch_index_0240><patch_index_0604></object>, and<phrase> gloves</phrase><object><patch_index_0400>"
-            "<patch_index_0532></object>, with<phrase> a pot</phrase><object><patch_index_0610><patch_index_0872>"
-            "</object> nearby and<phrase> a cup</phrase><object><patch_index_0796><patch_index_1023></object> placed "
-            "nearby. The snowman appears to be enjoying the warmth of the fire, and it appears to have a warm and cozy "
-            "atmosphere."
+            "<patch_index_0532></object>, and is surrounded by<phrase> a few pots</phrase><object><patch_index_0610>"
+            "<patch_index_0872></delimiter_of_multi_objects/><patch_index_0796><patch_index_1023></object> and"
+            "<phrase> a bowl</phrase><object><patch_index_0828><patch_index_0991></object>. The snowman appears to "
+            "be enjoying the warmth of the fire, possibly preparing for a winter adventure."
         )
         EXPECTED_PROCESSED_TEXT_1 = (
             "<grounding> An image of<phrase> a snowman</phrase><object><patch_index_0044><patch_index_0863></object> "
-            "warming himself by<phrase> a fire</phrase><object><patch_index_0005><patch_index_0911></object>."
+            "warming himself by<phrase> a fire</phrase><object><patch_index_0006><patch_index_0878></object>."
         )
         self.assertListEqual(processed_text, [EXPECTED_PROCESSED_TEXT_0, EXPECTED_PROCESSED_TEXT_1])
 
         EXPECTED_FINAL_TEXT_0 = (
             "Describe this image in detail: The image features a snowman sitting by a campfire in the snow. He is "
-            "wearing a hat, scarf, and gloves, with a pot nearby and a cup placed nearby. The snowman appears to be "
-            "enjoying the warmth of the fire, and it appears to have a warm and cozy atmosphere."
+            "wearing a hat, scarf, and gloves, and is surrounded by a few pots and a bowl. The snowman appears to be "
+            "enjoying the warmth of the fire, possibly preparing for a winter adventure."
         )
         EXPECTED_FINAL_TEXT_1 = "An image of a snowman warming himself by a fire."
         self.assertListEqual(all_final_text, [EXPECTED_FINAL_TEXT_0, EXPECTED_FINAL_TEXT_1])
@@ -739,12 +718,16 @@ class Kosmos2ModelIntegrationTest(unittest.TestCase):
             ("a hat", (109, 114), [(0.515625, 0.046875, 0.828125, 0.234375)]),
             ("scarf", (116, 121), [(0.515625, 0.234375, 0.890625, 0.578125)]),
             ("gloves", (127, 133), [(0.515625, 0.390625, 0.640625, 0.515625)]),
-            ("a pot", (140, 145), [(0.078125, 0.609375, 0.265625, 0.859375)]),
-            ("a cup", (157, 162), [(0.890625, 0.765625, 0.984375, 0.984375)]),
+            (
+                "a few pots",
+                (156, 166),
+                [(0.078125, 0.609375, 0.265625, 0.859375), (0.890625, 0.765625, 0.984375, 0.984375)],
+            ),
+            ("a bowl", (171, 177), [(0.890625, 0.796875, 0.984375, 0.953125)]),
         ]
         EXPECTED_ENTITIES_1 = [
             ("a snowman", (12, 21), [(0.390625, 0.046875, 0.984375, 0.828125)]),
-            ("a fire", (41, 47), [(0.171875, 0.015625, 0.484375, 0.890625)]),
+            ("a fire", (41, 47), [(0.203125, 0.015625, 0.453125, 0.859375)]),
         ]
         self.assertListEqual(all_entities, [EXPECTED_ENTITIES_0, EXPECTED_ENTITIES_1])
 
@@ -761,3 +744,40 @@ class Kosmos2ModelIntegrationTest(unittest.TestCase):
         self.assertEqual(processed_text[0], EXPECTED_PROCESSED_TEXT_0)
         self.assertEqual(all_final_text[0], EXPECTED_FINAL_TEXT_0)
         self.assertListEqual(all_entities[0], EXPECTED_ENTITIES_0)
+
+    @slow
+    def test_inference_interpolate_pos_encoding(self):
+        # ViT models have an `interpolate_pos_encoding` argument in their forward method,
+        # allowing to interpolate the pre-trained position embeddings in order to use
+        # the model on higher resolutions. The DINO model by Facebook AI leverages this
+        # to visualize self-attention on higher resolution images.
+        model = Kosmos2Model.from_pretrained("microsoft/kosmos-2-patch14-224").to(torch_device)
+
+        processor = AutoProcessor.from_pretrained(
+            "microsoft/kosmos-2-patch14-224", size={"shortest_edge": 180}, crop_size={"height": 180, "width": 180}
+        )
+
+        image = Image.open("./tests/fixtures/tests_samples/COCO/000000039769.png")
+        inputs = processor(text="what's in the image", images=image, return_tensors="pt").to(torch_device)
+
+        # interpolate_pos_encodiung false should return value error
+        with self.assertRaises(ValueError, msg="doesn't match model"):
+            with torch.no_grad():
+                model(**inputs, interpolate_pos_encoding=False)
+
+        # forward pass
+        with torch.no_grad():
+            outputs = model(**inputs, interpolate_pos_encoding=True)
+
+        # verify the logits
+        expected_shape = torch.Size((1, 145, 1024))
+
+        self.assertEqual(outputs.vision_model_output.last_hidden_state.shape, expected_shape)
+
+        expected_slice = torch.tensor(
+            [[0.9034, -1.3949, 3.8234], [2.8205, 0.6170, -0.5784], [1.6527, 2.8456, -0.4376]]
+        ).to(torch_device)
+
+        torch.testing.assert_close(
+            outputs.vision_model_output.last_hidden_state[0, :3, :3], expected_slice, rtol=1e-2, atol=1e-2
+        )

@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2020 The HuggingFace Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -374,14 +373,10 @@ class XLMModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin,
         if is_torch_available()
         else ()
     )
-    all_generative_model_classes = (
-        (XLMWithLMHeadModel,) if is_torch_available() else ()
-    )  # TODO (PVP): Check other models whether language generation is also applicable
     pipeline_model_mapping = (
         {
             "feature-extraction": XLMModel,
             "fill-mask": XLMWithLMHeadModel,
-            "question-answering": XLMForQuestionAnsweringSimple,
             "text-classification": XLMForSequenceClassification,
             "text-generation": XLMWithLMHeadModel,
             "token-classification": XLMForTokenClassification,
@@ -391,12 +386,35 @@ class XLMModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin,
         else {}
     )
 
+    def _greedy_generate(self, *args, use_cache=False, **kwargs):
+        """Same as the general one, with `use_cache=False` explicitly as xlm cannot use a cache correctly."""
+        return super()._greedy_generate(*args, use_cache=use_cache, **kwargs)
+
+    def _sample_generate(self, *args, use_cache=False, **kwargs):
+        """Same as the general one, with `use_cache=False` explicitly as xlm cannot use a cache correctly."""
+        return super()._sample_generate(*args, use_cache=use_cache, **kwargs)
+
+    def _beam_search_generate(self, *args, use_cache=False, **kwargs):
+        """Same as the general one, with `use_cache=False` explicitly as xlm cannot use a cache correctly."""
+        return super()._beam_search_generate(*args, use_cache=use_cache, **kwargs)
+
+    def _beam_sample_generate(self, *args, use_cache=False, **kwargs):
+        """Same as the general one, with `use_cache=False` explicitly as xlm cannot use a cache correctly."""
+        return super()._beam_sample_generate(*args, use_cache=use_cache, **kwargs)
+
     # TODO: Fix the failed tests
     def is_pipeline_test_to_skip(
-        self, pipeline_test_casse_name, config_class, model_architecture, tokenizer_name, processor_name
+        self,
+        pipeline_test_case_name,
+        config_class,
+        model_architecture,
+        tokenizer_name,
+        image_processor_name,
+        feature_extractor_name,
+        processor_name,
     ):
         if (
-            pipeline_test_casse_name == "QAPipelineTests"
+            pipeline_test_case_name == "QAPipelineTests"
             and tokenizer_name is not None
             and not tokenizer_name.endswith("Fast")
         ):
@@ -466,56 +484,38 @@ class XLMModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin,
         self.model_tester.create_and_check_xlm_for_multiple_choice(*config_and_inputs)
 
     def _check_attentions_for_generate(
-        self, batch_size, attentions, min_length, max_length, config, use_cache=False, num_beam_groups=1
+        self, batch_size, attentions, prompt_length, output_length, config, decoder_past_key_values
     ):
-        self.assertIsInstance(attentions, tuple)
-        self.assertListEqual(
-            [isinstance(iter_attentions, tuple) for iter_attentions in attentions], [True] * len(attentions)
+        # adds PAD dummy token, expected shape is off by 1
+        prompt_length += 1
+        output_length += 1
+        super()._check_attentions_for_generate(
+            batch_size, attentions, prompt_length, output_length, config, decoder_past_key_values
         )
-        self.assertEqual(len(attentions), (max_length - min_length) * num_beam_groups)
-
-        for idx, iter_attentions in enumerate(attentions):
-            # adds PAD dummy token
-            tgt_len = min_length + idx + 1
-            src_len = min_length + idx + 1
-
-            expected_shape = (
-                batch_size * num_beam_groups,
-                config.num_attention_heads,
-                tgt_len,
-                src_len,
-            )
-            # check attn size
-            self.assertListEqual(
-                [layer_attention.shape for layer_attention in iter_attentions], [expected_shape] * len(iter_attentions)
-            )
 
     def _check_hidden_states_for_generate(
-        self, batch_size, hidden_states, min_length, max_length, config, use_cache=False, num_beam_groups=1
+        self, batch_size, hidden_states, prompt_length, output_length, config, use_cache=False
     ):
-        self.assertIsInstance(hidden_states, tuple)
-        self.assertListEqual(
-            [isinstance(iter_hidden_states, tuple) for iter_hidden_states in hidden_states],
-            [True] * len(hidden_states),
+        # adds PAD dummy token, expected shape is off by 1
+        prompt_length += 1
+        output_length += 1
+        super()._check_hidden_states_for_generate(
+            batch_size, hidden_states, prompt_length, output_length, config, use_cache
         )
-        self.assertEqual(len(hidden_states), (max_length - min_length) * num_beam_groups)
-
-        for idx, iter_hidden_states in enumerate(hidden_states):
-            # adds PAD dummy token
-            seq_len = min_length + idx + 1
-            expected_shape = (batch_size * num_beam_groups, seq_len, config.hidden_size)
-            # check hidden size
-            self.assertListEqual(
-                [layer_hidden_states.shape for layer_hidden_states in iter_hidden_states],
-                [expected_shape] * len(iter_hidden_states),
-            )
-        pass
 
     @slow
     def test_model_from_pretrained(self):
         model_name = "FacebookAI/xlm-mlm-en-2048"
         model = XLMModel.from_pretrained(model_name)
         self.assertIsNotNone(model)
+
+    @unittest.skip("xlm cannot use a cache correctly and this test sets it to True explicitly")
+    def test_generate_methods_with_logits_to_keep(self):
+        pass
+
+    @unittest.skip("xlm cannot use a cache correctly and this test sets it to True explicitly")
+    def test_generate_with_and_without_position_ids(self):
+        pass
 
 
 @require_torch
@@ -548,5 +548,6 @@ class XLMModelLanguageGenerationTest(unittest.TestCase):
             447,
         ]  # the president the president the president the president the president the president the president the president the president the president
         # TODO(PVP): this and other input_ids I tried for generation give pretty bad results. Not sure why. Model might just not be made for auto-regressive inference
-        output_ids = model.generate(input_ids, do_sample=False)
-        self.assertListEqual(output_ids[0].cpu().numpy().tolist(), expected_output_ids)
+        # We limit the generation output to (max_length - input_length) while by default 20 new tokens will be generated.
+        output_ids = model.generate(input_ids, do_sample=False, max_length=20, use_cache=False)
+        self.assertListEqual(output_ids[0].tolist(), expected_output_ids)

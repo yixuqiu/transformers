@@ -9,32 +9,33 @@ Unless required by applicable law or agreed to in writing, software distributed 
 an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
 specific language governing permissions and limitations under the License.
 
-⚠️ Note that this file is in Markdown but contain specific syntax for our doc-builder (similar to MDX) that may not be
+⚠️ Note that this file is in Markdown but contains specific syntax for our doc-builder (similar to MDX) that may not be
 rendered properly in your Markdown viewer.
 
 -->
+*This model was contributed to Hugging Face Transformers on 2023-10-19.*
 
 # Fuyu
 
+
 ## Overview
 
-The Fuyu model was created by [ADEPT](https://www.adept.ai/blog/fuyu-8b), and authored by Rohan Bavishi, Erich Elsen, Curtis Hawthorne, Maxwell Nye, Augustus Odena, Arushi Somani, Sağnak Taşırlar. 
+The Fuyu model was created by [ADEPT](https://www.adept.ai/blog/fuyu-8b), and authored by Rohan Bavishi, Erich Elsen, Curtis Hawthorne, Maxwell Nye, Augustus Odena, Arushi Somani, Sağnak Taşırlar.
 
-The authors introduced Fuyu-8B, a decoder-only multimodal model based on the classic transformers architecture, with query and key normalization. A linear encoder is added to create multimodal embeddings from image inputs. 
+The authors introduced Fuyu-8B, a decoder-only multimodal model based on the classic transformers architecture, with query and key normalization. A linear encoder is added to create multimodal embeddings from image inputs.
 
 By treating image tokens like text tokens and using a special image-newline character, the model knows when an image line ends. Image positional embeddings are removed. This avoids the need for different training phases for various image resolutions. With 8 billion parameters and licensed under CC-BY-NC, Fuyu-8B is notable for its ability to handle both text and images, its impressive context size of 16K, and its overall performance.
 
 <Tip warning={true}>
 
-The `Fuyu` models were trained using `bfloat16`, but the original inference uses `float16` The checkpoints uploaded on the hub use `torch_dtype = 'float16'` which will be
-used by the `AutoModel` API to cast the checkpoints from `torch.float32` to `torch.float16`. 
+The `Fuyu` models were trained using `bfloat16`, but the original inference uses `float16` The checkpoints uploaded on the hub use `dtype = 'float16'` which will be
+used by the `AutoModel` API to cast the checkpoints from `torch.float32` to `torch.float16`.
 
-The `dtype` of the online weights is mostly irrelevant, unless you are using `torch_dtype="auto"` when initializing a model using `model = AutoModelForCausalLM.from_pretrained("path", torch_dtype = "auto")`. The reason is that the model will first be downloaded ( using the `dtype` of the checkpoints online) then it will be cast to the default `dtype` of `torch` (becomes `torch.float32`). Users should specify the `torch_dtype` they want, and if they don't it will be `torch.float32`.
+The `dtype` of the online weights is mostly irrelevant, unless you are using `dtype="auto"` when initializing a model using `model = AutoModelForCausalLM.from_pretrained("path", dtype = "auto")`. The reason is that the model will first be downloaded ( using the `dtype` of the checkpoints online) then it will be cast to the default `dtype` of `torch` (becomes `torch.float32`, device_map="auto"). Users should specify the `dtype` they want, and if they don't it will be `torch.float32`.
 
 Finetuning the model in `float16` is not recommended and known to produce `nan`, as such the model should be fine-tuned in `bfloat16`.
 
 </Tip>
-
 
 Tips:
 
@@ -50,14 +51,18 @@ python src/transformers/models/fuyu/convert_fuyu_weights_to_hf.py  --input_dir /
 ```
 
 For the chat model:
+
 ```bash
 wget https://axtkn4xl5cip.objectstorage.us-phoenix-1.oci.customer-oci.com/n/axtkn4xl5cip/b/adept-public-data/o/8b_chat_model_release.tar
 tar -xvf 8b_base_model_release.tar
 ```
+
 Then, model can be loaded via:
 
-```py 
+```python
 from transformers import FuyuConfig, FuyuForCausalLM
+
+
 model_config = FuyuConfig()
 model = FuyuForCausalLM(model_config).from_pretrained('/output/path')
 ```
@@ -65,11 +70,12 @@ model = FuyuForCausalLM(model_config).from_pretrained('/output/path')
 Inputs need to be passed through a specific Processor to have the correct formats.
 A processor requires an image_processor and a tokenizer. Hence, inputs can be loaded via:
 
-```py
+```python
 from PIL import Image
+
 from transformers import AutoTokenizer
-from transformers.models.fuyu.processing_fuyu import FuyuProcessor
 from transformers.models.fuyu.image_processing_fuyu import FuyuImageProcessor
+from transformers.models.fuyu.processing_fuyu import FuyuProcessor
 
 
 tokenizer = AutoTokenizer.from_pretrained('adept-hf-collab/fuyu-8b')
@@ -81,23 +87,24 @@ text_prompt = "Generate a coco-style caption.\\n"
 
 bus_image_url = "https://huggingface.co/datasets/hf-internal-testing/fixtures-captioning/resolve/main/bus.png"
 bus_image_pil = Image.open(io.BytesIO(requests.get(bus_image_url).content))
-inputs_to_model = processor(text=text_prompt, images=bus_image_pil)
-
-
+inputs_to_model = processor(images=bus_image_pil, text=text_prompt)
 ```
 
 This model was contributed by [Molbap](https://huggingface.co/Molbap).
 The original code can be found [here](https://github.com/persimmon-ai-labs/adept-inference).
 
 - Fuyu uses a `sentencepiece` based tokenizer, with a `Unigram` model. It supports bytefallback, which is only available in `tokenizers==0.14.0` for the fast tokenizer.
-The `LlamaTokenizer` is used as it is a standard wrapper around sentencepiece. 
+The `LlamaTokenizer` is used as it is a standard wrapper around sentencepiece.
 
 - The authors suggest to use the following prompt for image captioning: `f"Generate a coco-style caption.\\n"`
-
 
 ## FuyuConfig
 
 [[autodoc]] FuyuConfig
+
+## FuyuModel
+
+[[autodoc]] FuyuModel
 
 ## FuyuForCausalLM
 
@@ -107,7 +114,12 @@ The `LlamaTokenizer` is used as it is a standard wrapper around sentencepiece.
 ## FuyuImageProcessor
 
 [[autodoc]] FuyuImageProcessor
-    - __call__
+    - preprocess
+
+## FuyuImageProcessorPil
+
+[[autodoc]] FuyuImageProcessorPil
+    - preprocess
 
 ## FuyuProcessor
 

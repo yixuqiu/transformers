@@ -9,7 +9,7 @@ Unless required by applicable law or agreed to in writing, software distributed 
 an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
 specific language governing permissions and limitations under the License.
 
-⚠️ Note that this file is in Markdown but contain specific syntax for our doc-builder (similar to MDX) that may not be
+⚠️ Note that this file is in Markdown but contains specific syntax for our doc-builder (similar to MDX) that may not be
 rendered properly in your Markdown viewer.
 
 -->
@@ -40,13 +40,8 @@ an optional `attentions` attribute. Here we have the `loss` since we passed alon
 `hidden_states` and `attentions` because we didn't pass `output_hidden_states=True` or
 `output_attentions=True`.
 
-<Tip>
-
-When passing `output_hidden_states=True` you may expect the `outputs.hidden_states[-1]` to match `outputs.last_hidden_states` exactly.
-However, this is not always the case. Some models apply normalization or subsequent process to the last hidden state when it's returned.
-
-</Tip>
-
+> [!TIP]
+> With `output_hidden_states=True`, `outputs.hidden_states[-1]` isn't always the same tensor as `outputs.last_hidden_state`. Many vision and audio encoders, such as ViT, DINOv2, CLIP, and Wav2Vec2, return the last layer's output *before* the final layernorm in `hidden_states[-1]`, and the normalized output in `last_hidden_state`. Use `last_hidden_state` for the model's final features. To make `hidden_states[-1]` match `last_hidden_state`, set `tie_last_hidden_states=True` in the model config.
 
 You can access each attribute as you would usually do, and if that attribute has not been returned by the model, you
 will get `None`. Here for instance `outputs.loss` is the loss computed by the model, and `outputs.attentions` is
@@ -187,135 +182,3 @@ documented on their corresponding model page.
 ## SampleTSPredictionOutput
 
 [[autodoc]] modeling_outputs.SampleTSPredictionOutput
-
-## TFBaseModelOutput
-
-[[autodoc]] modeling_tf_outputs.TFBaseModelOutput
-
-## TFBaseModelOutputWithPooling
-
-[[autodoc]] modeling_tf_outputs.TFBaseModelOutputWithPooling
-
-## TFBaseModelOutputWithPoolingAndCrossAttentions
-
-[[autodoc]] modeling_tf_outputs.TFBaseModelOutputWithPoolingAndCrossAttentions
-
-## TFBaseModelOutputWithPast
-
-[[autodoc]] modeling_tf_outputs.TFBaseModelOutputWithPast
-
-## TFBaseModelOutputWithPastAndCrossAttentions
-
-[[autodoc]] modeling_tf_outputs.TFBaseModelOutputWithPastAndCrossAttentions
-
-## TFSeq2SeqModelOutput
-
-[[autodoc]] modeling_tf_outputs.TFSeq2SeqModelOutput
-
-## TFCausalLMOutput
-
-[[autodoc]] modeling_tf_outputs.TFCausalLMOutput
-
-## TFCausalLMOutputWithCrossAttentions
-
-[[autodoc]] modeling_tf_outputs.TFCausalLMOutputWithCrossAttentions
-
-## TFCausalLMOutputWithPast
-
-[[autodoc]] modeling_tf_outputs.TFCausalLMOutputWithPast
-
-## TFMaskedLMOutput
-
-[[autodoc]] modeling_tf_outputs.TFMaskedLMOutput
-
-## TFSeq2SeqLMOutput
-
-[[autodoc]] modeling_tf_outputs.TFSeq2SeqLMOutput
-
-## TFNextSentencePredictorOutput
-
-[[autodoc]] modeling_tf_outputs.TFNextSentencePredictorOutput
-
-## TFSequenceClassifierOutput
-
-[[autodoc]] modeling_tf_outputs.TFSequenceClassifierOutput
-
-## TFSeq2SeqSequenceClassifierOutput
-
-[[autodoc]] modeling_tf_outputs.TFSeq2SeqSequenceClassifierOutput
-
-## TFMultipleChoiceModelOutput
-
-[[autodoc]] modeling_tf_outputs.TFMultipleChoiceModelOutput
-
-## TFTokenClassifierOutput
-
-[[autodoc]] modeling_tf_outputs.TFTokenClassifierOutput
-
-## TFQuestionAnsweringModelOutput
-
-[[autodoc]] modeling_tf_outputs.TFQuestionAnsweringModelOutput
-
-## TFSeq2SeqQuestionAnsweringModelOutput
-
-[[autodoc]] modeling_tf_outputs.TFSeq2SeqQuestionAnsweringModelOutput
-
-## FlaxBaseModelOutput
-
-[[autodoc]] modeling_flax_outputs.FlaxBaseModelOutput
-
-## FlaxBaseModelOutputWithPast
-
-[[autodoc]] modeling_flax_outputs.FlaxBaseModelOutputWithPast
-
-## FlaxBaseModelOutputWithPooling
-
-[[autodoc]] modeling_flax_outputs.FlaxBaseModelOutputWithPooling
-
-## FlaxBaseModelOutputWithPastAndCrossAttentions
-
-[[autodoc]] modeling_flax_outputs.FlaxBaseModelOutputWithPastAndCrossAttentions
-
-## FlaxSeq2SeqModelOutput
-
-[[autodoc]] modeling_flax_outputs.FlaxSeq2SeqModelOutput
-
-## FlaxCausalLMOutputWithCrossAttentions
-
-[[autodoc]] modeling_flax_outputs.FlaxCausalLMOutputWithCrossAttentions
-
-## FlaxMaskedLMOutput
-
-[[autodoc]] modeling_flax_outputs.FlaxMaskedLMOutput
-
-## FlaxSeq2SeqLMOutput
-
-[[autodoc]] modeling_flax_outputs.FlaxSeq2SeqLMOutput
-
-## FlaxNextSentencePredictorOutput
-
-[[autodoc]] modeling_flax_outputs.FlaxNextSentencePredictorOutput
-
-## FlaxSequenceClassifierOutput
-
-[[autodoc]] modeling_flax_outputs.FlaxSequenceClassifierOutput
-
-## FlaxSeq2SeqSequenceClassifierOutput
-
-[[autodoc]] modeling_flax_outputs.FlaxSeq2SeqSequenceClassifierOutput
-
-## FlaxMultipleChoiceModelOutput
-
-[[autodoc]] modeling_flax_outputs.FlaxMultipleChoiceModelOutput
-
-## FlaxTokenClassifierOutput
-
-[[autodoc]] modeling_flax_outputs.FlaxTokenClassifierOutput
-
-## FlaxQuestionAnsweringModelOutput
-
-[[autodoc]] modeling_flax_outputs.FlaxQuestionAnsweringModelOutput
-
-## FlaxSeq2SeqQuestionAnsweringModelOutput
-
-[[autodoc]] modeling_flax_outputs.FlaxSeq2SeqQuestionAnsweringModelOutput

@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2022 The HuggingFace Inc. team.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Convert Audio Spectrogram Transformer checkpoints from the original repository. URL: https://github.com/YuanGongND/ast"""
-
 
 import argparse
 import json
@@ -59,7 +57,7 @@ def get_audio_spectrogram_transformer_config(model_name):
         config.num_labels = 527
         filename = "audioset-id2label.json"
 
-    id2label = json.load(open(hf_hub_download(repo_id, filename, repo_type="dataset"), "r"))
+    id2label = json.load(open(hf_hub_download(repo_id, filename, repo_type="dataset"), "r", encoding="utf-8"))
     id2label = {int(k): v for k, v in id2label.items()}
     config.id2label = id2label
     config.label2id = {v: k for k, v in id2label.items()}
@@ -106,7 +104,7 @@ def rename_key(name):
 
 
 def convert_state_dict(orig_state_dict, config):
-    for key in orig_state_dict.copy().keys():
+    for key in orig_state_dict.copy():
         val = orig_state_dict.pop(key)
 
         if "qkv" in key:
@@ -206,7 +204,8 @@ def convert_audio_spectrogram_transformer_checkpoint(model_name, pytorch_dump_fo
     feature_extractor = ASTFeatureExtractor(mean=mean, std=std, max_length=max_length)
 
     if "speech-commands" in model_name:
-        dataset = load_dataset("speech_commands", "v0.02", split="validation")
+        # TODO: Convert dataset to Parquet
+        dataset = load_dataset("google/speech_commands", "v0.02", split="validation")
         waveform = dataset[0]["audio"]["array"]
     else:
         filepath = hf_hub_download(
@@ -272,7 +271,9 @@ if __name__ == "__main__":
         "--pytorch_dump_folder_path", default=None, type=str, help="Path to the output PyTorch model directory."
     )
     parser.add_argument(
-        "--push_to_hub", action="store_true", help="Whether or not to push the converted model to the 🤗 hub."
+        "--push_to_hub",
+        action="store_true",
+        help="Whether or not to push the converted model to the Hugging Face hub.",
     )
 
     args = parser.parse_args()

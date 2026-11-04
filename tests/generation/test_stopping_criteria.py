@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2020 The HuggingFace Team Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -26,14 +25,15 @@ if is_torch_available():
     import torch
 
     from transformers.generation import (
+        ConfidenceCriteria,
         EosTokenCriteria,
         MaxLengthCriteria,
-        MaxNewTokensCriteria,
         MaxTimeCriteria,
         StoppingCriteriaList,
         StopStringCriteria,
         validate_stopping_criteria,
     )
+    from transformers.generation.stopping_criteria import STOP_STRING_EMBEDDING_CACHE
 
 
 @require_torch
@@ -45,6 +45,14 @@ class StoppingCriteriaTestCase(unittest.TestCase):
         input_ids = ids_tensor((batch_size, length), vocab_size)
         scores = torch.ones((batch_size, length), device=torch_device, dtype=torch.float) / length
         return input_ids, scores
+
+    def _assert_isolated_token_decode_loses_stop_string(self, tokenizer, text, stop_string):
+        input_ids = tokenizer(text, add_special_tokens=False)["input_ids"]
+        tokens = tokenizer.convert_ids_to_tokens(input_ids)
+        isolated_text = "".join(tokenizer.convert_tokens_to_string([token]) for token in tokens)
+
+        self.assertTrue(tokenizer.decode(input_ids, skip_special_tokens=False).endswith(stop_string))
+        self.assertNotIn(stop_string, isolated_text)
 
     def test_list_criteria(self):
         input_ids, scores = self._get_tensors(5)
@@ -76,21 +84,6 @@ class StoppingCriteriaTestCase(unittest.TestCase):
         input_ids, scores = self._get_tensors(10)
         self.assertTrue(all(criteria(input_ids, scores)))
 
-    def test_max_new_tokens_criteria(self):
-        criteria = MaxNewTokensCriteria(start_length=5, max_new_tokens=5)
-
-        input_ids, scores = self._get_tensors(5)
-        self.assertFalse(all(criteria(input_ids, scores)))
-
-        input_ids, scores = self._get_tensors(9)
-        self.assertFalse(all(criteria(input_ids, scores)))
-
-        input_ids, scores = self._get_tensors(10)
-        self.assertTrue(all(criteria(input_ids, scores)))
-
-        criteria_list = StoppingCriteriaList([criteria])
-        self.assertEqual(criteria_list.max_length, 10)
-
     def test_max_time_criteria(self):
         input_ids, scores = self._get_tensors(5)
 
@@ -115,6 +108,23 @@ class StoppingCriteriaTestCase(unittest.TestCase):
         input_ids, scores = self._get_tensors(5)
         input_ids[:, -1] = 1
         self.assertListEqual(criteria(input_ids, scores).tolist(), [False, False, False])
+
+    def test_confidence_criteria(self):
+        criteria = ConfidenceCriteria(assistant_confidence_threshold=0.5)
+
+        vocab_size = 250
+        length = 5
+
+        input_ids = ids_tensor((1, length), vocab_size)
+        scores = (torch.randn((1, vocab_size)),)
+
+        # Simulate high confidence by setting the probability of the last token to be high
+        scores[0][0, input_ids[0, -1]] = 10.0  # Logits before softmax
+        self.assertFalse(criteria(input_ids, scores))
+
+        # Simulate low confidence by setting the probability of the last token to be low
+        scores[0][0, input_ids[0, -1]] = -10.0  # Logits before softmax
+        self.assertTrue(criteria(input_ids, scores))
 
     def test_validate_stopping_criteria(self):
         validate_stopping_criteria(StoppingCriteriaList([MaxLengthCriteria(10)]), 10)
@@ -163,7 +173,7 @@ class StoppingCriteriaTestCase(unittest.TestCase):
             self.assertFalse(criteria(false_input_ids["input_ids"][i : i + 1], scores))
 
         # Now try it with a tokenizer where those are actually special tokens
-        tokenizer = AutoTokenizer.from_pretrained("cognitivecomputations/dolphin-2.5-mixtral-8x7b")
+        tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2-0.5B-Instruct")
         tokenizer.padding_side = "left"
         true_input_ids = tokenizer(true_strings, return_tensors="pt", padding="longest", add_special_tokens=False)
         false_input_ids = tokenizer(false_strings, return_tensors="pt", padding="longest", add_special_tokens=False)
@@ -173,6 +183,130 @@ class StoppingCriteriaTestCase(unittest.TestCase):
             self.assertTrue(criteria(true_input_ids["input_ids"][i : i + 1], scores))
         for i in range(len(false_strings)):
             self.assertFalse(criteria(false_input_ids["input_ids"][i : i + 1], scores))
+
+    def test_stop_string_criteria_byte_fragments(self):
+        STOP_STRING_EMBEDDING_CACHE.clear()
+        tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2-0.5B-Instruct")
+        self.assertEqual(StopStringCriteria._get_stop_string_matching_mode(tokenizer), "byte_level")
+        self._assert_isolated_token_decode_loses_stop_string(tokenizer, "대화 끝", "끝")
+        self._assert_isolated_token_decode_loses_stop_string(tokenizer, "작업 완료", "완료")
+
+        cases = [
+            ("대화 끝", "끝", True),
+            ("작업 완료", "완료", True),
+            ("대화 끝 다음", "끝", False),
+        ]
+
+        for text, stop_string, expected in cases:
+            input_ids = tokenizer(text, return_tensors="pt", add_special_tokens=False)["input_ids"]
+            criteria = StopStringCriteria(tokenizer=tokenizer, stop_strings=[stop_string])
+            self.assertEqual(bool(criteria(input_ids, scores=None)[0]), expected)
+
+    def test_stop_string_criteria_byte_fallback_fragments(self):
+        STOP_STRING_EMBEDDING_CACHE.clear()
+        tokenizer = AutoTokenizer.from_pretrained("hf-internal-testing/llama-tokenizer", use_fast=True)
+        self.assertEqual(StopStringCriteria._get_stop_string_matching_mode(tokenizer), "byte_fallback")
+        self._assert_isolated_token_decode_loses_stop_string(tokenizer, "대화 끝", "끝")
+        self._assert_isolated_token_decode_loses_stop_string(tokenizer, "abc 끝!", "끝!")
+
+        cases = [
+            ("대화 끝", "끝", True),
+            ("abc 끝!", "끝!", True),
+            ("대화 끝 다음", "끝", False),
+            ("완료 후속", "완료", False),
+        ]
+
+        for text, stop_string, expected in cases:
+            input_ids = tokenizer(text, return_tensors="pt", add_special_tokens=False)["input_ids"]
+            criteria = StopStringCriteria(tokenizer=tokenizer, stop_strings=[stop_string])
+            self.assertEqual(bool(criteria(input_ids, scores=None)[0]), expected)
+
+    def test_stop_string_criteria_byte_fragment_compile(self):
+        if not hasattr(torch, "compile"):
+            self.skipTest("torch.compile is not available")
+
+        STOP_STRING_EMBEDDING_CACHE.clear()
+        cases = [
+            ("Qwen/Qwen2-0.5B-Instruct", "대화 끝", "끝"),
+            ("hf-internal-testing/llama-tokenizer", "abc 끝!", "끝!"),
+        ]
+        for tokenizer_name, text, stop_string in cases:
+            tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, use_fast=True)
+            input_ids = tokenizer(text, return_tensors="pt", add_special_tokens=False)["input_ids"]
+            criteria = StopStringCriteria(tokenizer=tokenizer, stop_strings=[stop_string])
+            compiled_criteria = torch.compile(criteria, backend="eager", fullgraph=True)
+            self.assertTrue(bool(compiled_criteria(input_ids, scores=None)[0]))
+
+    def test_stop_string_criteria_byte_level_ascii(self):
+        tokenizer = AutoTokenizer.from_pretrained("openai-community/gpt2")
+        self.assertEqual(StopStringCriteria._get_stop_string_matching_mode(tokenizer), "byte_level")
+
+        true_input_ids = tokenizer("the end", return_tensors="pt", add_special_tokens=False)["input_ids"]
+        false_input_ids = tokenizer("end of", return_tensors="pt", add_special_tokens=False)["input_ids"]
+        criteria = StopStringCriteria(tokenizer=tokenizer, stop_strings=["end"])
+        self.assertTrue(bool(criteria(true_input_ids, scores=None)[0]))
+        self.assertFalse(bool(criteria(false_input_ids, scores=None)[0]))
+
+    def test_stop_string_criteria_non_byte_level_tokenizer(self):
+        tokenizer = AutoTokenizer.from_pretrained("hf-internal-testing/tiny-random-bert")
+        self.assertIsNone(StopStringCriteria._get_stop_string_matching_mode(tokenizer))
+
+        true_input_ids = tokenizer("the end", return_tensors="pt", add_special_tokens=False)["input_ids"]
+        false_input_ids = tokenizer("end of", return_tensors="pt", add_special_tokens=False)["input_ids"]
+        criteria = StopStringCriteria(tokenizer=tokenizer, stop_strings=["end"])
+        self.assertTrue(bool(criteria(true_input_ids, scores=None)[0]))
+        self.assertFalse(bool(criteria(false_input_ids, scores=None)[0]))
+
+    def test_stop_string_matching_mode_helpers(self):
+        class Decoder:
+            def __init__(self, state):
+                self.state = state
+
+            def __getstate__(self):
+                return self.state
+
+        class BackendTokenizer:
+            def __init__(self, decoder):
+                self.decoder = decoder
+
+        class Tokenizer:
+            def __init__(self, decoder):
+                self.backend_tokenizer = BackendTokenizer(decoder)
+
+        self.assertEqual(
+            StopStringCriteria._get_stop_string_matching_mode(
+                Tokenizer(Decoder(b'{"type":"Sequence","decoders":[{"type":"ByteLevel"}]}'))
+            ),
+            "byte_level",
+        )
+        self.assertEqual(
+            StopStringCriteria._get_stop_string_matching_mode(
+                Tokenizer(Decoder(b'{"type":"Sequence","decoders":[{"type":"ByteFallback"},{"type":"ByteLevel"}]}'))
+            ),
+            "byte_fallback",
+        )
+        self.assertIsNone(
+            StopStringCriteria._get_stop_string_matching_mode(
+                Tokenizer(Decoder(b'{"type":"Replace","content":"ByteFallback"}'))
+            )
+        )
+
+        self.assertEqual(StopStringCriteria._token_to_bytes("<0xEB>", "byte_fallback", None), b"\xeb")
+        self.assertEqual(StopStringCriteria._token_to_bytes("<0xeb>", "byte_fallback", None), b"\xeb")
+        for token in ["<0x+1>", "<0xG1>", "<0x 1>", "<0x1>", "<0x100>", "<0xeb", "hello"]:
+            self.assertIsNone(StopStringCriteria._token_to_bytes(token, "byte_fallback", None))
+
+    def test_stop_string_criteria_vocab_size_mismatch(self):
+        """Test that StopStringCriteria handles tokens above len(tokenizer) correctly."""
+        tokenizer = AutoTokenizer.from_pretrained("openai-community/gpt2")
+
+        # Create input_ids with tokens above len(tokenizer)
+        input_ids = torch.tensor([[len(tokenizer) + 1024, 1, 2]], device=torch_device)
+        scores = None
+        criteria = StopStringCriteria(tokenizer=tokenizer, stop_strings=["test"])
+
+        # This should not raise an error and should return False since no stop string is matched
+        self.assertFalse(criteria(input_ids, scores))
 
     def test_stop_string_matching_positions(self):
         stop_string = "stop"
@@ -198,17 +332,35 @@ class StoppingCriteriaTestCase(unittest.TestCase):
 
         # Positions inside the stop string where the token matches (excluding end overlaps)
         valid_positions = embedding_vec[:, 0].tolist()
-        self.assertEqual(valid_positions, [2, -1, -1, 3, -1])
+        self.assertEqual(valid_positions, [2, -1, -1, 3, -1, -1])
 
         # Overlap lengths between end of stop string and start of token
         end_overlaps = embedding_vec[:, 1].tolist()
-        self.assertEqual(end_overlaps, [-1, 3, 3, -1, 1])
+        self.assertEqual(end_overlaps, [-1, 3, 3, -1, 1, -1])
 
         # Length of each token
-        token_lengths = embedding_vec[:, 2].tolist()
+        token_lengths = embedding_vec[:-1, 2].tolist()
         self.assertEqual(token_lengths, [len(token) for token in token_list])
 
-    def test_criterias_per_row(self):
+    def test_single_letter_stop_string(self):
+        true_strings = ["a", "baa", "abc"]  # "abc" is a single token
+        false_strings = ["abbbbbbb", "b"]  # "abbbbbbb" is split into multiple tokens
+        stop_strings = ["a"]
+        tokenizer = AutoTokenizer.from_pretrained("openai-community/gpt2", add_prefix_space=False)
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+        tokenizer.padding_side = "left"
+
+        true_input_ids = tokenizer(true_strings, return_tensors="pt", padding="longest", add_special_tokens=False)
+        false_input_ids = tokenizer(false_strings, return_tensors="pt", padding="longest", add_special_tokens=False)
+
+        scores = None
+        criteria = StopStringCriteria(tokenizer=tokenizer, stop_strings=stop_strings)
+        for input_ids in true_input_ids["input_ids"]:
+            self.assertTrue(criteria(input_ids.unsqueeze(0), scores))
+        for input_ids in false_input_ids["input_ids"]:
+            self.assertFalse(criteria(input_ids.unsqueeze(0), scores))
+
+    def test_criteria_per_row(self):
         text = "They completed the challenging puzzle, revealing the hidden image at the end"
         stop_strings = ["end"]
 
@@ -224,13 +376,13 @@ class StoppingCriteriaTestCase(unittest.TestCase):
             ]
         )
 
-        # trigger stopping when at leat one criteria is satisfied, one value per batch
+        # trigger stopping when at least one criteria is satisfied, one value per batch
         self.assertTrue(criteria(inputs["input_ids"], scores))
 
         # return False when neither is satisfied
         self.assertFalse(criteria(inputs["input_ids"][:, :-1], scores))
 
-    def test_criterias_per_row_batched(self):
+    def test_criteria_per_row_batched(self):
         text = [
             "They completed the challenging puzzle, revealing the hidden image at the end",
             "Today a dragon flew over France",
@@ -251,7 +403,7 @@ class StoppingCriteriaTestCase(unittest.TestCase):
             ]
         )
 
-        # trigger stopping when at leat one criteria is satisfied
+        # trigger stopping when at least one criteria is satisfied
         self.assertListEqual(criteria(inputs["input_ids"], scores).tolist(), [True, False, False])
 
         # False when neither is satisfied

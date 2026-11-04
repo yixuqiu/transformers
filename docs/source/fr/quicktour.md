@@ -28,20 +28,10 @@ Avant de commencer, assurez-vous que vous avez installé toutes les bibliothèqu
 
 Vous aurez aussi besoin d'installer votre bibliothèque d'apprentissage profond favorite :
 
-<frameworkcontent>
-<pt>
 
 ```bash
 pip install torch
 ```
-</pt>
-<tf>
-
-```bash
-pip install tensorflow
-```
-</tf>
-</frameworkcontent>
 
 ## Pipeline
 
@@ -56,8 +46,6 @@ Le [`pipeline`] est le moyen le plus simple d'utiliser un modèle pré-entraîn�
 | Reconnaissance de token nommé      | Attribue une catégorie à chaque token dans une séquence (personnes, organisation, localisation, etc.)                            | Texte                | pipeline(task="ner")                          |
 | Question réponse             | Extrait une réponse du texte en fonction du contexte et d'une question                                       | Texte                | pipeline(task="question-answering")           |
 | Prédiction de token masqué                    | Prédit correctement le token masqué dans une séquence                                                               | Texte                | pipeline(task="fill-mask")                    |
-| Génération de résumé                | Génère un résumé d'une séquence de texte donnée ou d'un document                                                         | Texte                | pipeline(task="summarization")                |
-| Traduction                  | Traduit du texte d'un langage à un autre                                                                      | Texte                | pipeline(task="translation")                  |
 | Classification d'image       | Attribue une catégorie à une image                                                                           | Image                | pipeline(task="image-classification")         |
 | Segmentation d'image           | Attribue une catégorie à chaque pixel d'une image (supporte la segmentation sémantique, panoptique et d'instance) | Image                | pipeline(task="image-segmentation")           |
 | Détection d'objets             | Prédit les délimitations et catégories d'objets dans une image                                                | Image                | pipeline(task="object-detection")             |
@@ -132,8 +120,6 @@ Le [`pipeline`] peut être utilisé avec n'importe quel modèle du [Hub](https:/
 >>> model_name = "nlptown/bert-base-multilingual-uncased-sentiment"
 ```
 
-<frameworkcontent>
-<pt>
 Utilisez [`AutoModelForSequenceClassification`] et [`AutoTokenizer`] pour charger le modèle pré-entraîné et le tokenizer adapté (plus de détails sur une `AutoClass` dans la section suivante) :
 
 ```py
@@ -142,18 +128,6 @@ Utilisez [`AutoModelForSequenceClassification`] et [`AutoTokenizer`] pour charge
 >>> model = AutoModelForSequenceClassification.from_pretrained(model_name)
 >>> tokenizer = AutoTokenizer.from_pretrained(model_name)
 ```
-</pt>
-<tf>
-Utilisez [`TFAutoModelForSequenceClassification`] et [`AutoTokenizer`] pour charger le modèle pré-entraîné et le tokenizer adapté (plus de détails sur une `TFAutoClass` dans la section suivante) :
-
-```py
->>> from transformers import AutoTokenizer, TFAutoModelForSequenceClassification
-
->>> model = TFAutoModelForSequenceClassification.from_pretrained(model_name)
->>> tokenizer = AutoTokenizer.from_pretrained(model_name)
-```
-</tf>
-</frameworkcontent>
 
 Spécifiez le modèle et le tokenizer dans le [`pipeline`], et utilisez le `classifier` sur le texte en français :
 
@@ -169,7 +143,7 @@ Si vous ne parvenez pas à trouver un modèle adapté à votre cas d'utilisation
 
 <Youtube id="AhChOFRegn4"/>
 
-Les classes [`AutoModelForSequenceClassification`] et [`AutoTokenizer`] fonctionnent ensemble pour créer un [`pipeline`] comme celui que vous avez utilisé ci-dessus. Une [AutoClass](./model_doc/auto) est un raccourci qui récupère automatiquement l'architecture d'un modèle pré-entraîné à partir de son nom ou de son emplacement. Il vous suffit de sélectionner l'`AutoClass` appropriée à votre tâche et la classe de prétraitement qui lui est associée. 
+Les classes [`AutoModelForSequenceClassification`] et [`AutoTokenizer`] fonctionnent ensemble pour créer un [`pipeline`] comme celui que vous avez utilisé ci-dessus. Une [AutoClass](./model_doc/auto) est un raccourci qui récupère automatiquement l'architecture d'un modèle pré-entraîné à partir de son nom ou de son emplacement. Il vous suffit de sélectionner l'`AutoClass` appropriée à votre tâche et la classe de prétraitement qui lui est associée.
 
 Reprenons l'exemple de la section précédente et voyons comment vous pouvez utiliser l'`AutoClass` pour reproduire les résultats du [`pipeline`].
 
@@ -203,8 +177,6 @@ Le tokenizer retourne un dictionnaire contenant :
 
 Un tokenizer peut également accepter une liste de textes, et remplir et tronquer le texte pour retourner un échantillon de longueur uniforme :
 
-<frameworkcontent>
-<pt>
 
 ```py
 >>> pt_batch = tokenizer(
@@ -215,20 +187,6 @@ Un tokenizer peut également accepter une liste de textes, et remplir et tronque
 ...     return_tensors="pt",
 ... )
 ```
-</pt>
-<tf>
-
-```py
->>> tf_batch = tokenizer(
-...     ["We are very happy to show you the 🤗 Transformers library.", "We hope you don't hate it."],
-...     padding=True,
-...     truncation=True,
-...     max_length=512,
-...     return_tensors="tf",
-... )
-```
-</tf>
-</frameworkcontent>
 
 <Tip>
 
@@ -238,8 +196,6 @@ Consultez le tutoriel [prétraitement](./preprocessing) pour plus de détails su
 
 ### AutoModel
 
-<frameworkcontent>
-<pt>
 🤗 Transformers fournit un moyen simple et unifié de charger des instances pré-entraînées. Cela signifie que vous pouvez charger un [`AutoModel`] comme vous chargeriez un [`AutoTokenizer`]. La seule différence est de sélectionner l'[`AutoModel`] approprié pour la tâche. Pour une classification de texte (ou de séquence de textes), vous devez charger [`AutoModelForSequenceClassification`] :
 
 ```py
@@ -271,39 +227,6 @@ Le modèle produit les activations finales dans l'attribut `logits`. Appliquez l
 tensor([[0.0021, 0.0018, 0.0115, 0.2121, 0.7725],
         [0.2084, 0.1826, 0.1969, 0.1755, 0.2365]], grad_fn=<SoftmaxBackward0>)
 ```
-</pt>
-<tf>
-🤗 Transformers fournit un moyen simple et unifié de charger des instances pré-entraînés. Cela signifie que vous pouvez charger un [`TFAutoModel`] comme vous chargeriez un [`AutoTokenizer`]. La seule différence est de sélectionner le [`TFAutoModel`] approprié pour la tâche. Pour une classification de texte (ou de séquence de textes), vous devez charger [`TFAutoModelForSequenceClassification`] :
-
-```py
->>> from transformers import TFAutoModelForSequenceClassification
-
->>> model_name = "nlptown/bert-base-multilingual-uncased-sentiment"
->>> tf_model = TFAutoModelForSequenceClassification.from_pretrained(model_name)
-```
-
-<Tip>
-
-Voir le [résumé de la tâche](./task_summary) pour vérifier si elle est prise en charge par une classe [`AutoModel`].
-
-</Tip>
-
-Passez maintenant votre échantillon d'entrées prétraitées directement au modèle en passant les clés du dictionnaire directement aux tensors :
-
-```py
->>> tf_outputs = tf_model(tf_batch)
-```
-
-Le modèle produit les activations finales dans l'attribut `logits`. Appliquez la fonction softmax aux `logits` pour récupérer les probabilités :
-
-```py
->>> import tensorflow as tf
-
->>> tf_predictions = tf.nn.softmax(tf_outputs.logits, axis=-1)
->>> tf_predictions  # doctest: +IGNORE_RESULT
-```
-</tf>
-</frameworkcontent>
 
 <Tip>
 
@@ -313,8 +236,6 @@ Tous les modèles 🤗 Transformers (PyTorch ou TensorFlow) produisent les tenso
 
 ### Sauvegarder un modèle
 
-<frameworkcontent>
-<pt>
 Une fois que votre modèle est finetuné, vous pouvez le sauvegarder avec son tokenizer en utilisant [`PreTrainedModel.save_pretrained`] :
 
 ```py
@@ -328,46 +249,16 @@ Lorsque vous voulez réutiliser le modèle, rechargez-le avec [`PreTrainedModel.
 ```py
 >>> pt_model = AutoModelForSequenceClassification.from_pretrained("./pt_save_pretrained")
 ```
-</pt>
-<tf>
-Une fois que votre modèle est finetuné, vous pouvez le sauvegarder avec son tokenizer en utilisant [`TFPreTrainedModel.save_pretrained`] :
-
-```py
->>> tf_save_directory = "./tf_save_pretrained"
->>> tokenizer.save_pretrained(tf_save_directory)  # doctest: +IGNORE_RESULT
->>> tf_model.save_pretrained(tf_save_directory)
-```
-
-Lorsque vous voulez réutiliser le modèle, rechargez-le avec [`TFPreTrainedModel.from_pretrained`] :
-
-```py
->>> tf_model = TFAutoModelForSequenceClassification.from_pretrained("./tf_save_pretrained")
-```
-</tf>
-</frameworkcontent>
 
 Une fonctionnalité particulièrement cool 🤗 Transformers est la possibilité d'enregistrer un modèle et de le recharger en tant que modèle PyTorch ou TensorFlow. Le paramètre `from_pt` ou `from_tf` permet de convertir le modèle d'un framework à l'autre :
 
-<frameworkcontent>
-<pt>
 
 ```py
 >>> from transformers import AutoModel
 
->>> tokenizer = AutoTokenizer.from_pretrained(tf_save_directory)
->>> pt_model = AutoModelForSequenceClassification.from_pretrained(tf_save_directory, from_tf=True)
-```
-</pt>
-<tf>
-
-```py
->>> from transformers import TFAutoModel
-
 >>> tokenizer = AutoTokenizer.from_pretrained(pt_save_directory)
->>> tf_model = TFAutoModelForSequenceClassification.from_pretrained(pt_save_directory, from_pt=True)
+>>> pt_model = AutoModelForSequenceClassification.from_pretrained(pt_save_directory, from_pt=True)
 ```
-</tf>
-</frameworkcontent>
 
 ## Constructions de modèles personnalisés
 
@@ -381,8 +272,6 @@ Commencez par importer [`AutoConfig`], puis chargez le modèle pré-entraîné q
 >>> my_config = AutoConfig.from_pretrained("distilbert/distilbert-base-uncased", n_heads=12)
 ```
 
-<frameworkcontent>
-<pt>
 Créez un modèle personnalisé à partir de votre configuration avec [`AutoModel.from_config`] :
 
 ```py
@@ -390,17 +279,6 @@ Créez un modèle personnalisé à partir de votre configuration avec [`AutoMode
 
 >>> my_model = AutoModel.from_config(my_config)
 ```
-</pt>
-<tf>
-Créez un modèle personnalisé à partir de votre configuration avec [`TFAutoModel.from_config`] :
-
-```py
->>> from transformers import TFAutoModel
-
->>> my_model = TFAutoModel.from_config(my_config)
-```
-</tf>
-</frameworkcontent>
 
 Consultez le guide [Créer une architecture personnalisée](./create_a_model) pour plus d'informations sur la création de configurations personnalisées.
 
@@ -479,7 +357,7 @@ Maintenant, rassemblez tous ces éléments dans un [`Trainer`] :
 ...     args=training_args,
 ...     train_dataset=dataset["train"],
 ...     eval_dataset=dataset["test"],
-...     tokenizer=tokenizer,
+...     processing_class=tokenizer,
 ...     data_collator=data_collator,
 ... )  # doctest: +SKIP
 ```
@@ -496,9 +374,9 @@ Pour les tâches - comme la traduction ou la génération de résumé - qui util
 
 </Tip>
 
-Vous pouvez personnaliser le comportement de la boucle d'apprentissage en redéfinissant les méthodes à l'intérieur de [`Trainer`]. Cela vous permet de personnaliser des caractéristiques telles que la fonction de perte, l'optimiseur et le planificateur. Consultez la documentation de [`Trainer`] pour savoir quelles méthodes peuvent être redéfinies. 
+Vous pouvez personnaliser le comportement de la boucle d'apprentissage en redéfinissant les méthodes à l'intérieur de [`Trainer`]. Cela vous permet de personnaliser des caractéristiques telles que la fonction de perte, l'optimiseur et le planificateur. Consultez la documentation de [`Trainer`] pour savoir quelles méthodes peuvent être redéfinies.
 
-L'autre moyen de personnaliser la boucle d'apprentissage est d'utiliser les [Callbacks](./main_classes/callbacks). Vous pouvez utiliser les callbacks pour intégrer d'autres bibliothèques et inspecter la boucle d'apprentissage afin de suivre la progression ou d'arrêter l'apprentissage plus tôt. Les callbacks ne modifient rien dans la boucle d'apprentissage elle-même. Pour personnaliser quelque chose comme la fonction de perte, vous devez redéfinir le [`Trainer`] à la place.
+L'autre moyen de personnaliser la boucle d'apprentissage est d'utiliser les [Callbacks](./main_classes/callback). Vous pouvez utiliser les callbacks pour intégrer d'autres bibliothèques et inspecter la boucle d'apprentissage afin de suivre la progression ou d'arrêter l'apprentissage plus tôt. Les callbacks ne modifient rien dans la boucle d'apprentissage elle-même. Pour personnaliser quelque chose comme la fonction de perte, vous devez redéfinir le [`Trainer`] à la place.
 
 ## Entraînement avec TensorFlow
 

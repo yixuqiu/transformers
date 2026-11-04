@@ -13,7 +13,6 @@
 # limitations under the License.
 """Tests for the MusicGen processor."""
 
-import random
 import shutil
 import tempfile
 import unittest
@@ -22,32 +21,13 @@ import numpy as np
 
 from transformers import T5Tokenizer, T5TokenizerFast
 from transformers.testing_utils import require_sentencepiece, require_torch
-from transformers.utils.import_utils import is_speech_available, is_torch_available
+from transformers.utils.import_utils import is_speech_available
 
+from ...test_processing_common import floats_list
 
-if is_torch_available():
-    pass
 
 if is_speech_available():
     from transformers import EncodecFeatureExtractor, MusicgenProcessor
-
-
-global_rng = random.Random()
-
-
-# Copied from tests.models.whisper.test_feature_extraction_whisper.floats_list
-def floats_list(shape, scale=1.0, rng=None, name=None):
-    """Creates a random float32 tensor"""
-    if rng is None:
-        rng = global_rng
-
-    values = []
-    for batch_idx in range(shape[0]):
-        values.append([])
-        for _ in range(shape[1]):
-            values[-1].append(rng.random() * scale)
-
-    return values
 
 
 @require_torch
@@ -109,7 +89,7 @@ class MusicgenProcessorTest(unittest.TestCase):
         input_feat_extract = feature_extractor(raw_speech, return_tensors="np")
         input_processor = processor(raw_speech, return_tensors="np")
 
-        for key in input_feat_extract.keys():
+        for key in input_feat_extract:
             self.assertAlmostEqual(input_feat_extract[key].sum(), input_processor[key].sum(), delta=1e-2)
 
     def test_tokenizer(self):
@@ -124,7 +104,7 @@ class MusicgenProcessorTest(unittest.TestCase):
 
         encoded_tok = tokenizer(input_str)
 
-        for key in encoded_tok.keys():
+        for key in encoded_tok:
             self.assertListEqual(encoded_tok[key], encoded_processor[key])
 
     def test_tokenizer_decode(self):
@@ -136,21 +116,9 @@ class MusicgenProcessorTest(unittest.TestCase):
         predicted_ids = [[1, 4, 5, 8, 1, 0, 8], [3, 4, 3, 1, 1, 8, 9]]
 
         decoded_processor = processor.batch_decode(sequences=predicted_ids)
-        decoded_tok = tokenizer.batch_decode(predicted_ids)
+        decoded_tok = tokenizer.decode(predicted_ids)
 
         self.assertListEqual(decoded_tok, decoded_processor)
-
-    def test_model_input_names(self):
-        feature_extractor = self.get_feature_extractor()
-        tokenizer = self.get_tokenizer()
-
-        processor = MusicgenProcessor(tokenizer=tokenizer, feature_extractor=feature_extractor)
-
-        self.assertListEqual(
-            processor.model_input_names,
-            feature_extractor.model_input_names,
-            msg="`processor` and `feature_extractor` model input names do not match",
-        )
 
     def test_decode_audio(self):
         feature_extractor = self.get_feature_extractor(padding_side="left")

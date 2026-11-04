@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2022 The HuggingFace Inc. team.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,14 +13,14 @@
 # limitations under the License.
 """Convert Deformable DETR checkpoints."""
 
-
 import argparse
 import json
+from io import BytesIO
 from pathlib import Path
 
-import requests
 import torch
-from huggingface_hub import cached_download, hf_hub_url
+from huggingface_hub import hf_hub_download
+from huggingface_hub.utils import httpx
 from PIL import Image
 
 from transformers import DeformableDetrConfig, DeformableDetrForObjectDetection, DeformableDetrImageProcessor
@@ -79,9 +78,10 @@ def read_in_q_k_v(state_dict):
 # We will verify our results on an image of cute cats
 def prepare_img():
     url = "http://images.cocodataset.org/val2017/000000039769.jpg"
-    im = Image.open(requests.get(url, stream=True).raw)
+    with httpx.stream("GET", url) as response:
+        image = Image.open(BytesIO(response.read()))
 
-    return im
+    return image
 
 
 @torch.no_grad()
@@ -110,7 +110,7 @@ def convert_deformable_detr_checkpoint(
     config.num_labels = 91
     repo_id = "huggingface/label-files"
     filename = "coco-detection-id2label.json"
-    id2label = json.load(open(cached_download(hf_hub_url(repo_id, filename, repo_type="dataset")), "r"))
+    id2label = json.loads(Path(hf_hub_download(repo_id, filename, repo_type="dataset")).read_text(encoding="utf-8"))
     id2label = {int(k): v for k, v in id2label.items()}
     config.id2label = id2label
     config.label2id = {v: k for k, v in id2label.items()}
@@ -126,22 +126,21 @@ def convert_deformable_detr_checkpoint(
     logger.info("Converting model...")
 
     # load original state dict
-    state_dict = torch.load(checkpoint_path, map_location="cpu")["model"]
+    state_dict = torch.load(checkpoint_path, map_location="cpu", weights_only=True)["model"]
     # rename keys
-    for key in state_dict.copy().keys():
+    for key in state_dict.copy():
         val = state_dict.pop(key)
         state_dict[rename_key(key)] = val
     # query, key and value matrices need special treatment
     read_in_q_k_v(state_dict)
     # important: we need to prepend a prefix to each of the base model keys as the head models use different attributes for them
     prefix = "model."
-    for key in state_dict.copy().keys():
+    for key in state_dict.copy():
         if not key.startswith("class_embed") and not key.startswith("bbox_embed"):
             val = state_dict.pop(key)
             state_dict[prefix + key] = val
     # finally, create HuggingFace model and load state dict
-    model = DeformableDetrForObjectDetection(config)
-    model.load_state_dict(state_dict)
+    model = DeformableDetrForObjectDetection.from_pretrained(None, config=config, state_dict=state_dict)
     model.eval()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -199,7 +198,7 @@ def convert_deformable_detr_checkpoint(
         model_name += "-with-box-refine" if with_box_refine else ""
         model_name += "-two-stage" if two_stage else ""
         print("Pushing model to hub...")
-        model.push_to_hub(repo_path_or_name=model_name, organization="nielsr", commit_message="Add model")
+        model.push_to_hub(repo_id=f"nielsr/{model_name}")
 
 
 if __name__ == "__main__":
@@ -223,7 +222,9 @@ if __name__ == "__main__":
         help="Path to the folder to output PyTorch model.",
     )
     parser.add_argument(
-        "--push_to_hub", action="store_true", help="Whether or not to push the converted model to the 🤗 hub."
+        "--push_to_hub",
+        action="store_true",
+        help="Whether or not to push the converted model to the Hugging Face hub.",
     )
     args = parser.parse_args()
     convert_deformable_detr_checkpoint(

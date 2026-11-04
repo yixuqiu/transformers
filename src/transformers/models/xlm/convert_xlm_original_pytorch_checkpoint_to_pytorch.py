@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2018 The HuggingFace Inc. team.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Convert OpenAI GPT checkpoint."""
-
 
 import argparse
 import json
@@ -30,7 +28,7 @@ logging.set_verbosity_info()
 
 def convert_xlm_checkpoint_to_pytorch(xlm_checkpoint_path, pytorch_dump_folder_path):
     # Load checkpoint
-    chkpt = torch.load(xlm_checkpoint_path, map_location="cpu")
+    chkpt = torch.load(xlm_checkpoint_path, map_location="cpu", weights_only=True)
 
     state_dict = chkpt["model"]
 
@@ -43,7 +41,7 @@ def convert_xlm_checkpoint_to_pytorch(xlm_checkpoint_path, pytorch_dump_folder_p
             two_levels_state_dict["transformer." + k] = v
 
     config = chkpt["params"]
-    config = {n: v for n, v in config.items() if not isinstance(v, (torch.FloatTensor, numpy.ndarray))}
+    config = {n: v for n, v in config.items() if not isinstance(v, (torch.Tensor, numpy.ndarray))}
 
     vocab = chkpt["dico_word2id"]
     vocab = {s + "</w>" if s.find("@@") == -1 and i > 13 else s.replace("@@", ""): i for s, i in vocab.items()}

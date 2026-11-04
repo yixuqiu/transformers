@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2021 The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,21 +11,29 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" Testing suite for the PyTorch BEiT model. """
-
+"""Testing suite for the PyTorch BEiT model."""
 
 import unittest
+from functools import cached_property
 
+import pytest
 from datasets import load_dataset
-from packaging import version
 
 from transformers import BeitConfig
-from transformers.testing_utils import require_torch, require_torch_multi_gpu, require_vision, slow, torch_device
-from transformers.utils import cached_property, is_torch_available, is_vision_available
+from transformers.testing_utils import (
+    require_torch,
+    require_vision,
+    slow,
+    torch_device,
+)
+from transformers.utils import (
+    is_torch_available,
+    is_vision_available,
+)
 
 from ...test_backbone_common import BackboneTesterMixin
 from ...test_configuration_common import ConfigTester
-from ...test_modeling_common import ModelTesterMixin, _config_zero_init, floats_tensor, ids_tensor
+from ...test_modeling_common import ModelTesterMixin, floats_tensor, ids_tensor
 from ...test_pipeline_mixin import PipelineTesterMixin
 
 
@@ -45,10 +52,9 @@ if is_torch_available():
 
 
 if is_vision_available():
-    import PIL
     from PIL import Image
 
-    from transformers import BeitImageProcessor
+    from transformers import BeitImageProcessorPil
 
 
 class BeitModelTester:
@@ -75,6 +81,11 @@ class BeitModelTester:
         scope=None,
         out_indices=[1, 2, 3, 4],
         out_features=["stage1", "stage2", "stage3", "stage4"],
+        attn_implementation="eager",
+        mask_ratio=0.5,
+        use_relative_position_bias=False,
+        use_shared_relative_position_bias=False,
+        add_fpn=True,
     ):
         self.parent = parent
         self.vocab_size = vocab_size
@@ -97,10 +108,15 @@ class BeitModelTester:
         self.out_indices = out_indices
         self.out_features = out_features
         self.num_labels = num_labels
-
+        self.add_fpn = add_fpn
         # in BeiT, the seq length equals the number of patches + 1 (we add 1 for the [CLS] token)
         num_patches = (image_size // patch_size) ** 2
         self.seq_length = num_patches + 1
+        self.mask_length = self.seq_length - 1
+        self.num_masks = int(mask_ratio * self.seq_length)
+        self.attn_implementation = attn_implementation
+        self.use_relative_position_bias = use_relative_position_bias
+        self.use_shared_relative_position_bias = use_shared_relative_position_bias
 
     def prepare_config_and_inputs(self):
         pixel_values = floats_tensor([self.batch_size, self.num_channels, self.image_size, self.image_size])
@@ -132,6 +148,10 @@ class BeitModelTester:
             initializer_range=self.initializer_range,
             out_indices=self.out_indices,
             out_features=self.out_features,
+            attn_implementation=self.attn_implementation,
+            use_relative_position_bias=self.use_relative_position_bias,
+            use_shared_relative_position_bias=self.use_shared_relative_position_bias,
+            add_fpn=self.add_fpn,
         )
 
     def create_and_check_model(self, config, pixel_values, labels, pixel_labels):
@@ -142,6 +162,7 @@ class BeitModelTester:
         self.parent.assertEqual(result.last_hidden_state.shape, (self.batch_size, self.seq_length, self.hidden_size))
 
     def create_and_check_backbone(self, config, pixel_values, labels, pixel_labels):
+        config.add_fpn = False
         model = BeitBackbone(config=config)
         model.to(torch_device)
         model.eval()
@@ -247,13 +268,11 @@ class BeitModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCase):
         else {}
     )
 
-    test_pruning = False
     test_resize_embeddings = False
-    test_head_masking = False
 
     def setUp(self):
         self.model_tester = BeitModelTester(self)
-        self.config_tester = ConfigTester(self, config_class=BeitConfig, has_text_modality=False, hidden_size=37)
+        self.config_tester = ConfigTester(self, config_class=BeitConfig, has_text_modality=False, hidden_size=32)
 
     def test_config(self):
         self.config_tester.run_common_tests()
@@ -262,16 +281,16 @@ class BeitModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCase):
     def test_inputs_embeds(self):
         pass
 
-    @require_torch_multi_gpu
-    @unittest.skip(reason="BEiT has some layers using `add_module` which doesn't work well with `nn.DataParallel`")
-    def test_multi_gpu_data_parallel_forward(self):
-        pass
-
     @unittest.skip(reason="BEiT does not support feedforward chunking yet")
     def test_feed_forward_chunking(self):
         pass
 
-    def test_model_common_attributes(self):
+    @unittest.skip(reason="BEiT can't compile dynamic")
+    @pytest.mark.torch_compile_test
+    def test_sdpa_can_compile_dynamic(self):
+        pass
+
+    def test_model_get_set_embeddings(self):
         config, _ = self.model_tester.prepare_config_and_inputs_for_common()
 
         for model_class in self.all_model_classes:
@@ -302,7 +321,7 @@ class BeitModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCase):
 
     def test_training(self):
         if not self.model_tester.is_training:
-            return
+            self.skipTest(reason="model_tester.is_training is set to False")
 
         config, inputs_dict = self.model_tester.prepare_config_and_inputs_for_common()
         config.return_dict = True
@@ -323,10 +342,10 @@ class BeitModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCase):
             loss = model(**inputs).loss
             loss.backward()
 
-    def test_training_gradient_checkpointing(self):
+    def check_training_gradient_checkpointing(self, gradient_checkpointing_kwargs=None):
         config, inputs_dict = self.model_tester.prepare_config_and_inputs_for_common()
         if not self.model_tester.is_training:
-            return
+            self.skipTest(reason="model_tester.is_training is set to False")
 
         config.use_cache = False
         config.return_dict = True
@@ -345,42 +364,23 @@ class BeitModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.TestCase):
                 continue
 
             model = model_class(config)
-            model.gradient_checkpointing_enable()
+            model.activation_checkpointing_enable(activation_checkpointing_kwargs=gradient_checkpointing_kwargs)
             model.to(torch_device)
             model.train()
             inputs = self._prepare_for_class(inputs_dict, model_class, return_labels=True)
             loss = model(**inputs).loss
             loss.backward()
 
-    @unittest.skip(
-        reason="This architecure seem to not compute gradients properly when using GC, check: https://github.com/huggingface/transformers/pull/27124"
-    )
-    def test_training_gradient_checkpointing_use_reentrant(self):
-        pass
-
-    @unittest.skip(
-        reason="This architecure seem to not compute gradients properly when using GC, check: https://github.com/huggingface/transformers/pull/27124"
-    )
-    def test_training_gradient_checkpointing_use_reentrant_false(self):
-        pass
-
-    def test_initialization(self):
-        config, inputs_dict = self.model_tester.prepare_config_and_inputs_for_common()
-
-        configs_no_init = _config_zero_init(config)
-        for model_class in self.all_model_classes:
-            model = model_class(config=configs_no_init)
-            for name, param in model.named_parameters():
-                # we skip lambda parameters as these require special initial values
-                # determined by config.layer_scale_init_value
-                if "lambda" in name:
-                    continue
-                if param.requires_grad:
-                    self.assertIn(
-                        ((param.data.mean() * 1e9).round() / 1e9).item(),
-                        [0.0, 1.0],
-                        msg=f"Parameter {name} of model {model_class} seems not properly initialized",
-                    )
+    def test_reverse_loading_mapping(self):
+        # Enable both per-layer and shared relative position bias so that every
+        # mapping rule has at least one matching key in the model state dict.
+        self.model_tester.use_relative_position_bias = True
+        self.model_tester.use_shared_relative_position_bias = True
+        try:
+            super().test_reverse_loading_mapping()
+        finally:
+            self.model_tester.use_relative_position_bias = False
+            self.model_tester.use_shared_relative_position_bias = False
 
     @slow
     def test_model_from_pretrained(self):
@@ -400,7 +400,9 @@ def prepare_img():
 class BeitModelIntegrationTest(unittest.TestCase):
     @cached_property
     def default_image_processor(self):
-        return BeitImageProcessor.from_pretrained("microsoft/beit-base-patch16-224") if is_vision_available() else None
+        return (
+            BeitImageProcessorPil.from_pretrained("microsoft/beit-base-patch16-224") if is_vision_available() else None
+        )
 
     @slow
     def test_inference_masked_image_modeling_head(self):
@@ -426,7 +428,7 @@ class BeitModelIntegrationTest(unittest.TestCase):
             [[-3.2437, 0.5072, -13.9174], [-3.2456, 0.4948, -13.9401], [-3.2033, 0.5121, -13.8550]]
         ).to(torch_device)
 
-        self.assertTrue(torch.allclose(logits[bool_masked_pos][:3, :3], expected_slice, atol=1e-2))
+        torch.testing.assert_close(logits[bool_masked_pos][:3, :3], expected_slice, rtol=1e-2, atol=1e-2)
 
     @slow
     def test_inference_image_classification_head_imagenet_1k(self):
@@ -447,7 +449,7 @@ class BeitModelIntegrationTest(unittest.TestCase):
 
         expected_slice = torch.tensor([-1.2385, -1.0987, -1.0108]).to(torch_device)
 
-        self.assertTrue(torch.allclose(logits[0, :3], expected_slice, atol=1e-4))
+        torch.testing.assert_close(logits[0, :3], expected_slice, rtol=1e-4, atol=1e-4)
 
         expected_class_idx = 281
         self.assertEqual(logits.argmax(-1).item(), expected_class_idx)
@@ -473,7 +475,7 @@ class BeitModelIntegrationTest(unittest.TestCase):
 
         expected_slice = torch.tensor([1.6881, -0.2787, 0.5901]).to(torch_device)
 
-        self.assertTrue(torch.allclose(logits[0, :3], expected_slice, atol=1e-4))
+        torch.testing.assert_close(logits[0, :3], expected_slice, rtol=1e-4, atol=1e-4)
 
         expected_class_idx = 2396
         self.assertEqual(logits.argmax(-1).item(), expected_class_idx)
@@ -483,10 +485,10 @@ class BeitModelIntegrationTest(unittest.TestCase):
         model = BeitForSemanticSegmentation.from_pretrained("microsoft/beit-base-finetuned-ade-640-640")
         model = model.to(torch_device)
 
-        image_processor = BeitImageProcessor(do_resize=True, size=640, do_center_crop=False)
+        image_processor = BeitImageProcessorPil(do_resize=True, size=640, do_center_crop=False)
 
         ds = load_dataset("hf-internal-testing/fixtures_ade20k", split="test")
-        image = Image.open(ds[0]["file"])
+        image = ds[0]["image"].convert("RGB")
         inputs = image_processor(images=image, return_tensors="pt").to(torch_device)
 
         # forward pass
@@ -498,38 +500,25 @@ class BeitModelIntegrationTest(unittest.TestCase):
         expected_shape = torch.Size((1, 150, 160, 160))
         self.assertEqual(logits.shape, expected_shape)
 
-        is_pillow_less_than_9 = version.parse(PIL.__version__) < version.parse("9.0.0")
-
-        if is_pillow_less_than_9:
-            expected_slice = torch.tensor(
-                [
-                    [[-4.9225, -2.3954, -3.0522], [-2.8822, -1.0046, -1.7561], [-2.9549, -1.3228, -2.1347]],
-                    [[-5.8168, -3.4129, -4.0778], [-3.8651, -2.2214, -3.0277], [-3.8356, -2.4643, -3.3535]],
-                    [[-0.0078, 3.9952, 4.0754], [2.9856, 4.6944, 5.0035], [3.2413, 4.7813, 4.9969]],
-                ],
-                device=torch_device,
-            )
-        else:
-            expected_slice = torch.tensor(
-                [
-                    [[-4.8960, -2.3688, -3.0355], [-2.8478, -0.9836, -1.7418], [-2.9449, -1.3332, -2.1456]],
-                    [[-5.8081, -3.4124, -4.1006], [-3.8561, -2.2081, -3.0323], [-3.8365, -2.4601, -3.3669]],
-                    [[-0.0309, 3.9868, 4.0540], [2.9640, 4.6877, 4.9976], [3.2081, 4.7690, 4.9942]],
-                ],
-                device=torch_device,
-            )
-
-        self.assertTrue(torch.allclose(logits[0, :3, :3, :3], expected_slice, atol=1e-4))
+        expected_slice = torch.tensor(
+            [
+                [[-4.8960, -2.3688, -3.0355], [-2.8479, -0.9836, -1.7418], [-2.9449, -1.3333, -2.1456]],
+                [[-5.8081, -3.4124, -4.1006], [-3.8561, -2.2081, -3.0323], [-3.8365, -2.4601, -3.3669]],
+                [[-0.0309, 3.9868, 4.0540], [2.9640, 4.6877, 4.9976], [3.2081, 4.7690, 4.9942]],
+            ],
+            device=torch_device,
+        )
+        torch.testing.assert_close(logits[0, :3, :3, :3], expected_slice, rtol=1e-4, atol=1e-4)
 
     @slow
     def test_post_processing_semantic_segmentation(self):
         model = BeitForSemanticSegmentation.from_pretrained("microsoft/beit-base-finetuned-ade-640-640")
         model = model.to(torch_device)
 
-        image_processor = BeitImageProcessor(do_resize=True, size=640, do_center_crop=False)
+        image_processor = BeitImageProcessorPil(do_resize=True, size=640, do_center_crop=False)
 
         ds = load_dataset("hf-internal-testing/fixtures_ade20k", split="test")
-        image = Image.open(ds[0]["file"])
+        image = ds[0]["image"].convert("RGB")
         inputs = image_processor(images=image, return_tensors="pt").to(torch_device)
 
         # forward pass
@@ -546,6 +535,26 @@ class BeitModelIntegrationTest(unittest.TestCase):
         expected_shape = torch.Size((160, 160))
         self.assertEqual(segmentation[0].shape, expected_shape)
 
+    @slow
+    def test_inference_interpolate_pos_encoding(self):
+        model_name = "microsoft/beit-base-patch16-224-pt22k"
+        model = BeitModel.from_pretrained(model_name, **{"use_absolute_position_embeddings": True}).to(torch_device)
+
+        image = Image.open("./tests/fixtures/tests_samples/COCO/000000039769.png")
+        processor = BeitImageProcessorPil.from_pretrained(model_name)
+        inputs = processor(images=image, return_tensors="pt", size={"height": 480, "width": 480})
+        pixel_values = inputs.pixel_values.to(torch_device)
+
+        # with interpolate_pos_encoding being True the model should process the higher resolution image
+        # successfully and produce the expected output.
+        with torch.no_grad():
+            outputs = model(pixel_values, interpolate_pos_encoding=True)
+
+        # num_cls_tokens + (height / patch_size) * (width / patch_size)
+        # 1 + (480 / 16) * (480 / 16) = 1 + 30 * 30 = 901
+        expected_shape = torch.Size((1, 901, 768))
+        self.assertEqual(outputs.last_hidden_state.shape, expected_shape)
+
 
 @require_torch
 class BeitBackboneTest(unittest.TestCase, BackboneTesterMixin):
@@ -553,4 +562,4 @@ class BeitBackboneTest(unittest.TestCase, BackboneTesterMixin):
     config_class = BeitConfig
 
     def setUp(self):
-        self.model_tester = BeitModelTester(self)
+        self.model_tester = BeitModelTester(self, add_fpn=False)

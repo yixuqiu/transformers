@@ -148,7 +148,7 @@ MInDS-14 データセットのサンプリング レートは 8000kHz です (�
 ...     return batch
 ```
 
-データセット全体に前処理関数を適用するには、🤗 Datasets [`~datasets.Dataset.map`] 関数を使用します。 `num_proc` パラメータを使用してプロセスの数を増やすことで、`map` を高速化できます。 [`~datasets.Dataset.remove_columns`] メソッドを使用して、不要な列を削除します。 
+データセット全体に前処理関数を適用するには、🤗 Datasets [`~datasets.Dataset.map`] 関数を使用します。 `num_proc` パラメータを使用してプロセスの数を増やすことで、`map` を高速化できます。 [`~datasets.Dataset.remove_columns`] メソッドを使用して、不要な列を削除します。
 
 ```py
 >>> encoded_minds = minds.map(prepare_dataset, remove_columns=minds.column_names["train"], num_proc=4)
@@ -170,7 +170,7 @@ MInDS-14 データセットのサンプリング レートは 8000kHz です (�
 ...     processor: AutoProcessor
 ...     padding: Union[bool, str] = "longest"
 
-...     def __call__(self, features: List[Dict[str, Union[List[int], torch.Tensor]]]) -> Dict[str, torch.Tensor]:
+...     def __call__(self, features: list[dict[str, Union[list[int], torch.Tensor]]]) -> dict[str, torch.Tensor]:
 ...         # split inputs and labels since they have to be of different lengths and need
 ...         # different padding methods
 ...         input_features = [{"input_values": feature["input_values"][0]} for feature in features]
@@ -228,8 +228,6 @@ MInDS-14 データセットのサンプリング レートは 8000kHz です (�
 
 ## Train
 
-<frameworkcontent>
-<pt>
 <Tip>
 
 [`Trainer`] を使用したモデルの微調整に慣れていない場合は、[ここ](../training#train-with-pytorch-trainer) の基本的なチュートリアルをご覧ください。
@@ -264,7 +262,7 @@ MInDS-14 データセットのサンプリング レートは 8000kHz です (�
 ...     max_steps=2000,
 ...     gradient_checkpointing=True,
 ...     fp16=True,
-...     group_by_length=True,
+...     train_sampling_strategy="group_by_length",
 ...     eval_strategy="steps",
 ...     per_device_eval_batch_size=8,
 ...     save_steps=1000,
@@ -281,7 +279,7 @@ MInDS-14 データセットのサンプリング レートは 8000kHz です (�
 ...     args=training_args,
 ...     train_dataset=encoded_minds["train"],
 ...     eval_dataset=encoded_minds["test"],
-...     tokenizer=processor,
+...     processing_class=processor,
 ...     data_collator=data_collator,
 ...     compute_metrics=compute_metrics,
 ... )
@@ -295,8 +293,6 @@ MInDS-14 データセットのサンプリング レートは 8000kHz です (�
 >>> trainer.push_to_hub()
 ```
 
-</pt>
-</frameworkcontent>
 
 <Tip>
 
@@ -337,8 +333,6 @@ MInDS-14 データセットのサンプリング レートは 8000kHz です (�
 
 必要に応じて、「パイプライン」の結果を手動で複製することもできます。
 
-<frameworkcontent>
-<pt>
 
 プロセッサをロードしてオーディオ ファイルと文字起こしを前処理し、`input`を PyTorch テンソルとして返します。
 
@@ -371,5 +365,3 @@ Pass your inputs to the model and return the logits:
 ['I WOUL LIKE O SET UP JOINT ACOUNT WTH Y PARTNER']
 ```
 
-</pt>
-</frameworkcontent>

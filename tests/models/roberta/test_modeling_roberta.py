@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2020 The HuggingFace Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,11 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 import unittest
 
-from transformers import RobertaConfig, is_torch_available
-from transformers.testing_utils import TestCasePlus, require_torch, slow, torch_device
+import pytest
+
+from transformers import DataCollatorWithFlattening, RobertaConfig, is_torch_available
+from transformers.testing_utils import (
+    TestCasePlus,
+    require_flash_attn,
+    require_torch,
+    require_torch_accelerator,
+    slow,
+    torch_device,
+)
 
 from ...generation.test_utils import GenerationTesterMixin
 from ...test_configuration_common import ConfigTester
@@ -37,10 +44,7 @@ if is_torch_available():
         RobertaForTokenClassification,
         RobertaModel,
     )
-    from transformers.models.roberta.modeling_roberta import (
-        RobertaEmbeddings,
-        create_position_ids_from_input_ids,
-    )
+    from transformers.models.roberta.modeling_roberta import RobertaEmbeddings
 
 ROBERTA_TINY = "sshleifer/tiny-distilroberta-base"
 
@@ -379,12 +383,10 @@ class RobertaModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMi
         if is_torch_available()
         else ()
     )
-    all_generative_model_classes = (RobertaForCausalLM,) if is_torch_available() else ()
     pipeline_model_mapping = (
         {
             "feature-extraction": RobertaModel,
             "fill-mask": RobertaForMaskedLM,
-            "question-answering": RobertaForQuestionAnswering,
             "text-classification": RobertaForSequenceClassification,
             "text-generation": RobertaForCausalLM,
             "token-classification": RobertaForTokenClassification,
@@ -393,12 +395,17 @@ class RobertaModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMi
         if is_torch_available()
         else {}
     )
-    fx_compatible = True
     model_split_percents = [0.5, 0.8, 0.9]
+
+    # Overwriting to add `is_decoder` flag
+    def prepare_config_and_inputs_for_generate(self, batch_size=2):
+        config, inputs = super().prepare_config_and_inputs_for_generate(batch_size)
+        config.is_decoder = True
+        return config, inputs
 
     def setUp(self):
         self.model_tester = RobertaModelTester(self)
-        self.config_tester = ConfigTester(self, config_class=RobertaConfig, hidden_size=37)
+        self.config_tester = ConfigTester(self, config_class=RobertaConfig, hidden_size=32)
 
     def test_config(self):
         self.config_tester.run_common_tests()
@@ -407,18 +414,16 @@ class RobertaModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMi
         config_and_inputs = self.model_tester.prepare_config_and_inputs()
         self.model_tester.create_and_check_model(*config_and_inputs)
 
-    def test_model_various_embeddings(self):
-        config_and_inputs = self.model_tester.prepare_config_and_inputs()
-        for type in ["absolute", "relative_key", "relative_key_query"]:
-            config_and_inputs[0].position_embedding_type = type
-            self.model_tester.create_and_check_model(*config_and_inputs)
+    def test_inputs_embeds_matches_input_ids(self):
+        position_ids = torch.arange(self.model_tester.seq_length).to(torch_device)
+        position_ids = position_ids[None, :].repeat(self.model_tester.batch_size, 1)
+        return super().test_inputs_embeds_matches_input_ids(position_ids=position_ids)
 
     def test_model_as_decoder(self):
         config_and_inputs = self.model_tester.prepare_config_and_inputs_for_decoder()
         self.model_tester.create_and_check_model_as_decoder(*config_and_inputs)
 
     def test_model_as_decoder_with_default_input_mask(self):
-        # This regression test was failing with PyTorch < 1.3
         (
             config,
             input_ids,
@@ -453,11 +458,6 @@ class RobertaModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMi
         config_and_inputs = self.model_tester.prepare_config_and_inputs_for_decoder()
         self.model_tester.create_and_check_decoder_model_past_large_inputs(*config_and_inputs)
 
-    def test_decoder_model_past_with_large_inputs_relative_pos_emb(self):
-        config_and_inputs = self.model_tester.prepare_config_and_inputs_for_decoder()
-        config_and_inputs[0].position_embedding_type = "relative_key"
-        self.model_tester.create_and_check_decoder_model_past_large_inputs(*config_and_inputs)
-
     def test_for_masked_lm(self):
         config_and_inputs = self.model_tester.prepare_config_and_inputs()
         self.model_tester.create_and_check_for_masked_lm(*config_and_inputs)
@@ -481,8 +481,7 @@ class RobertaModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMi
         self.assertIsNotNone(model)
 
     def test_create_position_ids_respects_padding_index(self):
-        """Ensure that the default position ids only assign a sequential . This is a regression
-        test for https://github.com/huggingface/transformers/issues/1761
+        """This is a regression test for https://github.com/huggingface/transformers/issues/1761
 
         The position ids should be masked with the embedding object's padding index. Therefore, the
         first available non-padding position index is RobertaEmbeddings.padding_idx + 1
@@ -495,13 +494,12 @@ class RobertaModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMi
             [[0 + model.padding_idx + 1, 1 + model.padding_idx + 1, 2 + model.padding_idx + 1, model.padding_idx]]
         )
 
-        position_ids = create_position_ids_from_input_ids(input_ids, model.padding_idx)
+        position_ids = RobertaEmbeddings.create_position_ids_from_input_ids(input_ids, model.padding_idx)
         self.assertEqual(position_ids.shape, expected_positions.shape)
         self.assertTrue(torch.all(torch.eq(position_ids, expected_positions)))
 
     def test_create_position_ids_from_inputs_embeds(self):
-        """Ensure that the default position ids only assign a sequential . This is a regression
-        test for https://github.com/huggingface/transformers/issues/1761
+        """This is a regression test for https://github.com/huggingface/transformers/issues/1761
 
         The position ids should be masked with the embedding object's padding index. Therefore, the
         first available non-padding position index is RobertaEmbeddings.padding_idx + 1
@@ -517,9 +515,45 @@ class RobertaModelTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMi
             3 + embeddings.padding_idx + 1,
         ]
         expected_positions = torch.as_tensor([expected_single_positions, expected_single_positions])
-        position_ids = embeddings.create_position_ids_from_inputs_embeds(inputs_embeds)
+        position_ids = embeddings.create_position_ids_from_inputs_embeds(inputs_embeds, embeddings.padding_idx)
         self.assertEqual(position_ids.shape, expected_positions.shape)
         self.assertTrue(torch.all(torch.eq(position_ids, expected_positions)))
+
+    @require_flash_attn
+    @require_torch_accelerator
+    @pytest.mark.flash_attn_test
+    def test_flash_attn_padding_free_position_ids_start(self):
+        """Test that flattening a batch with position_ids_start=pad_token_id + 1 matches the padded batched run."""
+        config, input_ids, _, attention_mask = self.model_tester.prepare_config_and_inputs()[:4]
+        model = RobertaModel(config).to(dtype=torch.float16, device=torch_device).eval()
+        model.set_attn_implementation("flash_attention_2")
+
+        # Modify the random attention mask into right padding, the packed run takes the prefix of each sequence
+        attention_mask = attention_mask.sort(dim=-1, descending=True).values
+        # Replace accidental pad tokens, they would shift the position ids the model computes
+        input_ids[input_ids == config.pad_token_id] += 1
+        input_ids[attention_mask == 0] = config.pad_token_id
+
+        with torch.no_grad():
+            batched = model(input_ids, attention_mask=attention_mask).last_hidden_state
+
+        collator = DataCollatorWithFlattening(position_ids_start=config.pad_token_id + 1)
+        lengths = attention_mask.sum(dim=-1)
+        packed = collator([{"input_ids": ids[:length]} for ids, length in zip(input_ids, lengths)])
+        expected_position_ids = [pos + config.pad_token_id + 1 for length in lengths for pos in range(length)]
+        self.assertEqual(packed["position_ids"][0].tolist(), expected_position_ids)
+        # Without attention_mask and cu_seq_lens, FlashAttention infers the boundaries from position_ids
+        with torch.no_grad():
+            flattened = model(
+                input_ids=packed["input_ids"].to(torch_device), position_ids=packed["position_ids"].to(torch_device)
+            ).last_hidden_state
+
+        # The padded and packed runs match bitwise on the hardware tested, wrong position ids differ by >2
+        offset = 0
+        for i, length in enumerate(lengths):
+            flattened_seq = flattened[0, offset : offset + length]
+            torch.testing.assert_close(batched[i, :length], flattened_seq, atol=1e-3, rtol=1e-3)
+            offset += length
 
 
 @require_torch
@@ -542,7 +576,7 @@ class RobertaModelIntegrationTest(TestCasePlus):
         # roberta.eval()
         # expected_slice = roberta.model.forward(input_ids)[0][:, :3, :3].detach()
 
-        self.assertTrue(torch.allclose(output[:, :3, :3], expected_slice, atol=1e-4))
+        torch.testing.assert_close(output[:, :3, :3], expected_slice, rtol=1e-4, atol=1e-4)
 
     @slow
     def test_inference_no_head(self):
@@ -560,7 +594,7 @@ class RobertaModelIntegrationTest(TestCasePlus):
         # roberta.eval()
         # expected_slice = roberta.extract_features(input_ids)[:, :3, :3].detach()
 
-        self.assertTrue(torch.allclose(output[:, :3, :3], expected_slice, atol=1e-4))
+        torch.testing.assert_close(output[:, :3, :3], expected_slice, rtol=1e-4, atol=1e-4)
 
     @slow
     def test_inference_classification_head(self):
@@ -577,4 +611,4 @@ class RobertaModelIntegrationTest(TestCasePlus):
         # roberta.eval()
         # expected_tensor = roberta.predict("mnli", input_ids, return_logits=True).detach()
 
-        self.assertTrue(torch.allclose(output, expected_tensor, atol=1e-4))
+        torch.testing.assert_close(output, expected_tensor, rtol=1e-4, atol=1e-4)

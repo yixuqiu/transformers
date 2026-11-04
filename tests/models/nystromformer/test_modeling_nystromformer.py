@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2021 The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,8 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" Testing suite for the PyTorch Nystromformer model. """
-
+"""Testing suite for the PyTorch Nystromformer model."""
 
 import unittest
 
@@ -233,7 +231,6 @@ class NystromformerModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.Tes
         {
             "feature-extraction": NystromformerModel,
             "fill-mask": NystromformerForMaskedLM,
-            "question-answering": NystromformerForQuestionAnswering,
             "text-classification": NystromformerForSequenceClassification,
             "token-classification": NystromformerForTokenClassification,
             "zero-shot": NystromformerForSequenceClassification,
@@ -241,12 +238,10 @@ class NystromformerModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.Tes
         if is_torch_available()
         else {}
     )
-    test_pruning = False
-    test_headmasking = False
 
     def setUp(self):
         self.model_tester = NystromformerModelTester(self)
-        self.config_tester = ConfigTester(self, config_class=NystromformerConfig, hidden_size=37)
+        self.config_tester = ConfigTester(self, config_class=NystromformerConfig, hidden_size=32)
 
     def test_config(self):
         self.config_tester.run_common_tests()
@@ -254,12 +249,6 @@ class NystromformerModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.Tes
     def test_model(self):
         config_and_inputs = self.model_tester.prepare_config_and_inputs()
         self.model_tester.create_and_check_model(*config_and_inputs)
-
-    def test_model_various_embeddings(self):
-        config_and_inputs = self.model_tester.prepare_config_and_inputs()
-        for type in ["absolute", "relative_key", "relative_key_query"]:
-            config_and_inputs[0].position_embedding_type = type
-            self.model_tester.create_and_check_model(*config_and_inputs)
 
     def test_for_masked_lm(self):
         config_and_inputs = self.model_tester.prepare_config_and_inputs()
@@ -305,7 +294,7 @@ class NystromformerModelIntegrationTest(unittest.TestCase):
             [[[-0.4532, -0.0936, 0.5137], [-0.2676, 0.0628, 0.6186], [-0.3629, -0.1726, 0.4716]]]
         )
 
-        self.assertTrue(torch.allclose(output[:, :3, :3], expected_slice, atol=1e-4))
+        torch.testing.assert_close(output[:, :3, :3], expected_slice, rtol=1e-4, atol=1e-4)
 
     @slow
     def test_masked_lm_end_to_end(self):

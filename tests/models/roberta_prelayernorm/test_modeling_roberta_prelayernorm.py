@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2022 The HuggingFace Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -37,10 +36,7 @@ if is_torch_available():
         RobertaPreLayerNormForTokenClassification,
         RobertaPreLayerNormModel,
     )
-    from transformers.models.roberta_prelayernorm.modeling_roberta_prelayernorm import (
-        RobertaPreLayerNormEmbeddings,
-        create_position_ids_from_input_ids,
-    )
+    from transformers.models.roberta_prelayernorm.modeling_roberta_prelayernorm import RobertaPreLayerNormEmbeddings
 
 
 # Copied from tests.models.roberta.test_modeling_roberta.RobertaModelTester with Roberta->RobertaPreLayerNorm
@@ -378,12 +374,10 @@ class RobertaPreLayerNormModelTest(ModelTesterMixin, GenerationTesterMixin, Pipe
         if is_torch_available()
         else ()
     )
-    all_generative_model_classes = (RobertaPreLayerNormForCausalLM,) if is_torch_available() else ()
     pipeline_model_mapping = (
         {
             "feature-extraction": RobertaPreLayerNormModel,
             "fill-mask": RobertaPreLayerNormForMaskedLM,
-            "question-answering": RobertaPreLayerNormForQuestionAnswering,
             "text-classification": RobertaPreLayerNormForSequenceClassification,
             "text-generation": RobertaPreLayerNormForCausalLM,
             "token-classification": RobertaPreLayerNormForTokenClassification,
@@ -392,29 +386,32 @@ class RobertaPreLayerNormModelTest(ModelTesterMixin, GenerationTesterMixin, Pipe
         if is_torch_available()
         else {}
     )
-    fx_compatible = False
     model_split_percents = [0.5, 0.8, 0.9]
+
+    # Overwriting to add `is_decoder` flag
+    def prepare_config_and_inputs_for_generate(self, batch_size=2):
+        config, inputs = super().prepare_config_and_inputs_for_generate(batch_size)
+        config.is_decoder = True
+        return config, inputs
 
     # Copied from tests.models.roberta.test_modeling_roberta.RobertaModelTest.setUp with Roberta->RobertaPreLayerNorm
     def setUp(self):
         self.model_tester = RobertaPreLayerNormModelTester(self)
-        self.config_tester = ConfigTester(self, config_class=RobertaPreLayerNormConfig, hidden_size=37)
+        self.config_tester = ConfigTester(self, config_class=RobertaPreLayerNormConfig, hidden_size=32)
 
     # Copied from tests.models.roberta.test_modeling_roberta.RobertaModelTest.test_config
     def test_config(self):
         self.config_tester.run_common_tests()
 
+    def test_inputs_embeds_matches_input_ids(self):
+        position_ids = torch.arange(self.model_tester.seq_length).to(torch_device)
+        position_ids = position_ids[None, :].repeat(self.model_tester.batch_size, 1)
+        return super().test_inputs_embeds_matches_input_ids(position_ids=position_ids)
+
     # Copied from tests.models.roberta.test_modeling_roberta.RobertaModelTest.test_model
     def test_model(self):
         config_and_inputs = self.model_tester.prepare_config_and_inputs()
         self.model_tester.create_and_check_model(*config_and_inputs)
-
-    # Copied from tests.models.roberta.test_modeling_roberta.RobertaModelTest.test_model_various_embeddings
-    def test_model_various_embeddings(self):
-        config_and_inputs = self.model_tester.prepare_config_and_inputs()
-        for type in ["absolute", "relative_key", "relative_key_query"]:
-            config_and_inputs[0].position_embedding_type = type
-            self.model_tester.create_and_check_model(*config_and_inputs)
 
     # Copied from tests.models.roberta.test_modeling_roberta.RobertaModelTest.test_model_as_decoder
     def test_model_as_decoder(self):
@@ -423,7 +420,6 @@ class RobertaPreLayerNormModelTest(ModelTesterMixin, GenerationTesterMixin, Pipe
 
     # Copied from tests.models.roberta.test_modeling_roberta.RobertaModelTest.test_model_as_decoder_with_default_input_mask
     def test_model_as_decoder_with_default_input_mask(self):
-        # This regression test was failing with PyTorch < 1.3
         (
             config,
             input_ids,
@@ -488,8 +484,7 @@ class RobertaPreLayerNormModelTest(ModelTesterMixin, GenerationTesterMixin, Pipe
 
     # Copied from tests.models.roberta.test_modeling_roberta.RobertaModelTest.test_create_position_ids_respects_padding_index with Roberta->RobertaPreLayerNorm
     def test_create_position_ids_respects_padding_index(self):
-        """Ensure that the default position ids only assign a sequential . This is a regression
-        test for https://github.com/huggingface/transformers/issues/1761
+        """This is a regression test for https://github.com/huggingface/transformers/issues/1761
 
         The position ids should be masked with the embedding object's padding index. Therefore, the
         first available non-padding position index is RobertaPreLayerNormEmbeddings.padding_idx + 1
@@ -502,14 +497,13 @@ class RobertaPreLayerNormModelTest(ModelTesterMixin, GenerationTesterMixin, Pipe
             [[0 + model.padding_idx + 1, 1 + model.padding_idx + 1, 2 + model.padding_idx + 1, model.padding_idx]]
         )
 
-        position_ids = create_position_ids_from_input_ids(input_ids, model.padding_idx)
+        position_ids = RobertaPreLayerNormEmbeddings.create_position_ids_from_input_ids(input_ids, model.padding_idx)
         self.assertEqual(position_ids.shape, expected_positions.shape)
         self.assertTrue(torch.all(torch.eq(position_ids, expected_positions)))
 
     # Copied from tests.models.roberta.test_modeling_roberta.RobertaModelTest.test_create_position_ids_from_inputs_embeds with Roberta->RobertaPreLayerNorm
     def test_create_position_ids_from_inputs_embeds(self):
-        """Ensure that the default position ids only assign a sequential . This is a regression
-        test for https://github.com/huggingface/transformers/issues/1761
+        """This is a regression test for https://github.com/huggingface/transformers/issues/1761
 
         The position ids should be masked with the embedding object's padding index. Therefore, the
         first available non-padding position index is RobertaPreLayerNormEmbeddings.padding_idx + 1
@@ -525,7 +519,7 @@ class RobertaPreLayerNormModelTest(ModelTesterMixin, GenerationTesterMixin, Pipe
             3 + embeddings.padding_idx + 1,
         ]
         expected_positions = torch.as_tensor([expected_single_positions, expected_single_positions])
-        position_ids = embeddings.create_position_ids_from_inputs_embeds(inputs_embeds)
+        position_ids = embeddings.create_position_ids_from_inputs_embeds(inputs_embeds, embeddings.padding_idx)
         self.assertEqual(position_ids.shape, expected_positions.shape)
         self.assertTrue(torch.all(torch.eq(position_ids, expected_positions)))
 
@@ -546,7 +540,7 @@ class RobertaPreLayerNormModelIntegrationTest(TestCasePlus):
             [[[40.4880, 18.0199, -5.2367], [-1.8877, -4.0885, 10.7085], [-2.2613, -5.6110, 7.2665]]]
         )
 
-        self.assertTrue(torch.allclose(output[:, :3, :3], EXPECTED_SLICE, atol=1e-4))
+        torch.testing.assert_close(output[:, :3, :3], EXPECTED_SLICE, rtol=1e-4, atol=1e-4)
 
     @slow
     def test_inference_no_head(self):
@@ -560,4 +554,4 @@ class RobertaPreLayerNormModelIntegrationTest(TestCasePlus):
             [[[0.0208, -0.0356, 0.0237], [-0.1569, -0.0411, -0.2626], [0.1879, 0.0125, -0.0089]]]
         )
 
-        self.assertTrue(torch.allclose(output[:, :3, :3], EXPECTED_SLICE, atol=1e-4))
+        torch.testing.assert_close(output[:, :3, :3], EXPECTED_SLICE, rtol=1e-4, atol=1e-4)

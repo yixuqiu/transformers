@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2022 The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,17 +11,27 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" Testing suite for the PyTorch Data2VecVision model. """
-
+"""Testing suite for the PyTorch Data2VecVision model."""
 
 import unittest
+from functools import cached_property
+
+import pytest
 
 from transformers import Data2VecVisionConfig
-from transformers.testing_utils import require_torch, require_torch_multi_gpu, require_vision, slow, torch_device
-from transformers.utils import cached_property, is_torch_available, is_vision_available
+from transformers.testing_utils import (
+    require_torch,
+    require_vision,
+    slow,
+    torch_device,
+)
+from transformers.utils import (
+    is_torch_available,
+    is_vision_available,
+)
 
 from ...test_configuration_common import ConfigTester
-from ...test_modeling_common import ModelTesterMixin, _config_zero_init, floats_tensor, ids_tensor
+from ...test_modeling_common import ModelTesterMixin, floats_tensor, ids_tensor
 from ...test_pipeline_mixin import PipelineTesterMixin
 
 
@@ -41,7 +50,7 @@ if is_torch_available():
 if is_vision_available():
     from PIL import Image
 
-    from transformers import BeitImageProcessor
+    from transformers import BeitImageProcessorPil
 
 
 class Data2VecVisionModelTester:
@@ -67,6 +76,8 @@ class Data2VecVisionModelTester:
         num_labels=3,
         scope=None,
         out_indices=[0, 1, 2, 3],
+        attn_implementation="eager",
+        mask_ratio=0.5,
     ):
         self.parent = parent
         self.vocab_size = 100
@@ -92,6 +103,9 @@ class Data2VecVisionModelTester:
         # in BeiT, the seq length equals the number of patches + 1 (we add 1 for the [CLS] token)
         num_patches = (image_size // patch_size) ** 2
         self.seq_length = num_patches + 1
+        self.mask_length = self.seq_length - 1
+        self.num_masks = int(mask_ratio * self.seq_length)
+        self.attn_implementation = attn_implementation
 
     def prepare_config_and_inputs(self):
         pixel_values = floats_tensor([self.batch_size, self.num_channels, self.image_size, self.image_size])
@@ -122,6 +136,7 @@ class Data2VecVisionModelTester:
             is_decoder=False,
             initializer_range=self.initializer_range,
             out_indices=self.out_indices,
+            attn_implementation=self.attn_implementation,
         )
 
     def create_and_check_model(self, config, pixel_values, labels, pixel_labels):
@@ -184,31 +199,29 @@ class Data2VecVisionModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.Te
         else {}
     )
 
-    test_pruning = False
     test_resize_embeddings = False
-    test_head_masking = False
 
     def setUp(self):
         self.model_tester = Data2VecVisionModelTester(self)
         self.config_tester = ConfigTester(
-            self, config_class=Data2VecVisionConfig, has_text_modality=False, hidden_size=37
+            self, config_class=Data2VecVisionConfig, has_text_modality=False, hidden_size=32
         )
 
     def test_config(self):
         self.config_tester.run_common_tests()
 
-    def test_inputs_embeds(self):
-        # Data2VecVision does not use inputs_embeds
-        pass
-
-    @require_torch_multi_gpu
     @unittest.skip(
-        reason="Data2VecVision has some layers using `add_module` which doesn't work well with `nn.DataParallel`"
+        reason="Will fix only if requested by the community: it fails with `torch._dynamo.exc.InternalTorchDynamoError: IndexError: list index out of range`. Without compile, the test pass."
     )
-    def test_multi_gpu_data_parallel_forward(self):
+    @pytest.mark.torch_compile_test
+    def test_sdpa_can_compile_dynamic(self):
         pass
 
-    def test_model_common_attributes(self):
+    @unittest.skip(reason="Data2VecVision does not use inputs_embeds")
+    def test_inputs_embeds(self):
+        pass
+
+    def test_model_get_set_embeddings(self):
         config, _ = self.model_tester.prepare_config_and_inputs_for_common()
 
         for model_class in self.all_model_classes:
@@ -227,7 +240,7 @@ class Data2VecVisionModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.Te
 
     def test_training(self):
         if not self.model_tester.is_training:
-            return
+            self.skipTest(reason="model_tester.is_training is set to False")
 
         config, inputs_dict = self.model_tester.prepare_config_and_inputs_for_common()
         config.return_dict = True
@@ -246,7 +259,7 @@ class Data2VecVisionModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.Te
     def test_training_gradient_checkpointing(self):
         config, inputs_dict = self.model_tester.prepare_config_and_inputs_for_common()
         if not self.model_tester.is_training:
-            return
+            self.skipTest(reason="model_tester.is_training is set to False")
 
         config.use_cache = False
         config.return_dict = True
@@ -262,34 +275,12 @@ class Data2VecVisionModelTest(ModelTesterMixin, PipelineTesterMixin, unittest.Te
                     [self.model_tester.batch_size, height, width], device=torch_device
                 ).long()
             model = model_class(config)
-            model.gradient_checkpointing_enable()
+            model.activation_checkpointing_enable()
             model.to(torch_device)
             model.train()
             inputs = self._prepare_for_class(inputs_dict, model_class, return_labels=True)
             loss = model(**inputs).loss
             loss.backward()
-
-    def test_initialization(self):
-        config, inputs_dict = self.model_tester.prepare_config_and_inputs_for_common()
-
-        configs_no_init = _config_zero_init(config)
-        for model_class in self.all_model_classes:
-            model = model_class(config=configs_no_init)
-            for name, param in model.named_parameters():
-                # we skip lambda parameters as these require special initial values
-                # determined by config.layer_scale_init_value
-                if "lambda" in name:
-                    continue
-                if param.requires_grad:
-                    self.assertIn(
-                        ((param.data.mean() * 1e9).round() / 1e9).item(),
-                        [0.0, 1.0],
-                        msg=f"Parameter {name} of model {model_class} seems not properly initialized",
-                    )
-
-    def check_pt_tf_outputs(self, tf_outputs, pt_outputs, model_class, tol=2e-4, name="outputs", attributes=None):
-        # We override with a slightly higher tol value, as semseg models tend to diverge a bit more
-        super().check_pt_tf_outputs(tf_outputs, pt_outputs, model_class, tol, name, attributes)
 
     def test_for_image_classification(self):
         config_and_inputs = self.model_tester.prepare_config_and_inputs()
@@ -314,7 +305,9 @@ class Data2VecVisionModelIntegrationTest(unittest.TestCase):
     @cached_property
     def default_image_processor(self):
         return (
-            BeitImageProcessor.from_pretrained("facebook/data2vec-vision-base-ft1k") if is_vision_available() else None
+            BeitImageProcessorPil.from_pretrained("facebook/data2vec-vision-base-ft1k")
+            if is_vision_available()
+            else None
         )
 
     @slow
@@ -338,7 +331,29 @@ class Data2VecVisionModelIntegrationTest(unittest.TestCase):
 
         expected_slice = torch.tensor([0.3277, -0.1395, 0.0911]).to(torch_device)
 
-        self.assertTrue(torch.allclose(logits[0, :3], expected_slice, atol=1e-4))
+        torch.testing.assert_close(logits[0, :3], expected_slice, rtol=1e-4, atol=1e-4)
 
         expected_top2 = [model.config.label2id[i] for i in ["remote control, remote", "tabby, tabby cat"]]
-        self.assertEqual(logits[0].topk(2).indices.cpu().tolist(), expected_top2)
+        self.assertEqual(logits[0].topk(2).indices.tolist(), expected_top2)
+
+    @slow
+    def test_inference_interpolate_pos_encoding(self):
+        model_name = "facebook/data2vec-vision-base-ft1k"
+        model = Data2VecVisionModel.from_pretrained(model_name, **{"use_absolute_position_embeddings": True}).to(
+            torch_device
+        )
+
+        image = Image.open("./tests/fixtures/tests_samples/COCO/000000039769.png")
+        processor = BeitImageProcessorPil.from_pretrained("facebook/data2vec-vision-base-ft1k")
+        inputs = processor(images=image, return_tensors="pt", size={"height": 480, "width": 480})
+        pixel_values = inputs.pixel_values.to(torch_device)
+
+        # with interpolate_pos_encoding being True the model should process the higher resolution image
+        # successfully and produce the expected output.
+        with torch.no_grad():
+            outputs = model(pixel_values, interpolate_pos_encoding=True)
+
+        # num_cls_tokens + (height / patch_size) * (width / patch_size)
+        # 1 + (480 / 16) * (480 / 16) = 901
+        expected_shape = torch.Size((1, 901, 768))
+        self.assertEqual(outputs.last_hidden_state.shape, expected_shape)

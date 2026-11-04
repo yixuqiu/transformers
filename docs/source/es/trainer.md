@@ -14,7 +14,7 @@ rendered properly in your Markdown viewer.
 
 -->
 
-# El Trainer 
+# El Trainer
 
 El [`Trainer`] es un bucle completo de entrenamiento y evaluación para modelos de PyTorch implementado en la biblioteca Transformers. Solo necesitas pasarle las piezas necesarias para el entrenamiento (modelo, tokenizador, conjunto de datos, función de evaluación, hiperparámetros de entrenamiento, etc.), y la clase [`Trainer`] se encarga del resto. Esto facilita comenzar a entrenar más rápido sin tener que escribir manualmente tu propio bucle de entrenamiento. Pero al mismo tiempo, [`Trainer`] es muy personalizable y ofrece una gran cantidad de opciones de entrenamiento para que puedas adaptarlo a tus necesidades exactas de entrenamiento.
 
@@ -79,7 +79,7 @@ trainer = Trainer(
     args=training_args,
     train_dataset=dataset["train"],
     eval_dataset=dataset["test"],
-    tokenizer=tokenizer,
+    processing_class=tokenizer,
     data_collator=data_collator,
     compute_metrics=compute_metrics,
 )
@@ -151,7 +151,7 @@ from transformers import TrainerCallback
 class EarlyStoppingCallback(TrainerCallback):
     def __init__(self, num_steps=10):
         self.num_steps = num_steps
-    
+
     def on_step_end(self, args, state, control, **kwargs):
         if state.global_step >= self.num_steps:
             return {"should_training_stop": True}
@@ -169,7 +169,7 @@ trainer = Trainer(
     args=training_args,
     train_dataset=dataset["train"],
     eval_dataset=dataset["test"],
-    tokenizer=tokenizer,
+    processing_class=tokenizer,
     data_collator=data_collator,
     compute_metrics=compute_metrics,
     callback=[EarlyStoppingCallback()],
@@ -265,8 +265,8 @@ Para usar Accelerate con [`Trainer`], ejecuta el comando [`accelerate.config`](h
 <hfoption id="DistributedDataParallel">
 
 ```yml
-compute_environment: LOCAL_MACHINE                                                                                             
-distributed_type: MULTI_GPU                                                                                                    
+compute_environment: LOCAL_MACHINE
+distributed_type: MULTI_GPU
 downcast_bf16: 'no'
 gpu_ids: all
 machine_rank: 0 #change rank as per the node
@@ -337,8 +337,8 @@ use_cpu: false
 <hfoption id="DeepSpeed with Accelerate plugin">
 
 ```yml
-compute_environment: LOCAL_MACHINE                                                                                             
-deepspeed_config:                                                                                                              
+compute_environment: LOCAL_MACHINE
+deepspeed_config:
   gradient_accumulation_steps: 1
   gradient_clipping: 0.7
   offload_optimizer_device: cpu
@@ -362,48 +362,9 @@ use_cpu: false
 ```
 
 </hfoption>
+
 </hfoptions>
 
 El comando [`accelerate_launch`](https://huggingface.co/docs/accelerate/package_reference/cli#accelerate-launch) es la forma recomendada de lanzar tu script de entrenamiento en un sistema distribuido con Accelerate y [`Trainer`] con los parámetros especificados en `config_file.yaml`. Este archivo se guarda en la carpeta de caché de Accelerate y se carga automáticamente cuando ejecutas `accelerate_launch`.
-
-Por ejemplo, para ejecutar el script de entrenamiento [`run_glue.py`](https://github.com/huggingface/transformers/blob/f4db565b695582891e43a5e042e5d318e28f20b8/examples/pytorch/text-classification/run_glue.py#L4) con la configuración de FSDP:
-
-```bash
-accelerate launch \
-    ./examples/pytorch/text-classification/run_glue.py \
-    --model_name_or_path bert-base-cased \
-    --task_name $TASK_NAME \
-    --do_train \
-    --do_eval \
-    --max_seq_length 128 \
-    --per_device_train_batch_size 16 \
-    --learning_rate 5e-5 \
-    --num_train_epochs 3 \
-    --output_dir /tmp/$TASK_NAME/ \
-    --overwrite_output_dir
-```
-
-También puedes especificar los parámetros del archivo config_file.yaml directamente en la línea de comandos:
-
-```bash
-accelerate launch --num_processes=2 \
-    --use_fsdp \
-    --mixed_precision=bf16 \
-    --fsdp_auto_wrap_policy=TRANSFORMER_BASED_WRAP  \
-    --fsdp_transformer_layer_cls_to_wrap="BertLayer" \
-    --fsdp_sharding_strategy=1 \
-    --fsdp_state_dict_type=FULL_STATE_DICT \
-    ./examples/pytorch/text-classification/run_glue.py
-    --model_name_or_path bert-base-cased \
-    --task_name $TASK_NAME \
-    --do_train \
-    --do_eval \
-    --max_seq_length 128 \
-    --per_device_train_batch_size 16 \
-    --learning_rate 5e-5 \
-    --num_train_epochs 3 \
-    --output_dir /tmp/$TASK_NAME/ \
-    --overwrite_output_dir
-```
 
 Consulta el tutorial [Lanzamiento de tus scripts con Accelerate](https://huggingface.co/docs/accelerate/basic_tutorials/launch) para obtener más información sobre `accelerate_launch` y las configuraciones personalizadas.
